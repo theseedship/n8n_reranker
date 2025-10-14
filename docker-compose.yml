@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for n8n
+  postgres:
+    image: postgres:15-alpine
+    container_name: n8n_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=n8n
+      - POSTGRES_DB=n8n
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U n8n']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # n8n with custom plugin support
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: n8n_custom
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=n8n
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - NODE_ENV=development
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      # Custom nodes directory
+      - N8N_CUSTOM_EXTENSIONS=/home/node/.n8n/custom
+    volumes:
+      # Mount custom plugins directory
+      - ./custom-nodes:/home/node/.n8n/custom:ro
+      # Persistent data
+      - n8n_data:/home/node/.n8n
+      # Development: watch for changes
+      - ./custom-nodes:/usr/local/lib/node_modules/n8n/custom:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://localhost:5678/healthz || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Optional: Development container with Node.js for plugin development
+  plugin-dev:
+    image: node:18-alpine
+    container_name: n8n_plugin_dev
+    working_dir: /workspace
+    volumes:
+      - ./custom-nodes:/workspace
+      - plugin_node_modules:/workspace/node_modules
+    command: sh -c "npm install && tail -f /dev/null"
+    environment:
+      - NODE_ENV=development
+
+volumes:
+  postgres_data:
+    driver: local
+  n8n_data:
+    driver: local
+  plugin_node_modules:
+    driver: local
