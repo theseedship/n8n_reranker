@@ -32,7 +32,6 @@ export class OllamaReranker implements INodeType {
 		defaults: {
 			name: 'Ollama Reranker',
 		},
-		usableAsTool: true,
 		codex: {
 			categories: ['AI'],
 			subcategories: {
