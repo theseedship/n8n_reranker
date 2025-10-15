@@ -1,0 +1,177 @@
+{
+  "name": "Test Ollama Reranker Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "When clicking 'Test workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sample documents about machine learning\nconst documents = [\n  {\n    \"pageContent\": \"Machine learning is a subset of artificial intelligence that enables computers to learn from data without being explicitly programmed.\",\n    \"metadata\": { \"source\": \"intro\", \"topic\": \"ml-basics\" }\n  },\n  {\n    \"pageContent\": \"The weather today is sunny with a high of 75 degrees. Perfect for outdoor activities.\",\n    \"metadata\": { \"source\": \"weather\", \"topic\": \"unrelated\" }\n  },\n  {\n    \"pageContent\": \"Deep learning uses neural networks with multiple layers to process complex patterns in data, achieving state-of-the-art results in image recognition.\",\n    \"metadata\": { \"source\": \"advanced\", \"topic\": \"deep-learning\" }\n  },\n  {\n    \"pageContent\": \"My favorite recipe for chocolate cake includes flour, sugar, eggs, and cocoa powder.\",\n    \"metadata\": { \"source\": \"cooking\", \"topic\": \"unrelated\" }\n  },\n  {\n    \"pageContent\": \"Natural language processing (NLP) is a branch of AI that helps computers understand and generate human language.\",\n    \"metadata\": { \"source\": \"nlp\", \"topic\": \"ml-nlp\" }\n  },\n  {\n    \"pageContent\": \"Supervised learning algorithms learn from labeled training data to make predictions on new, unseen data.\",\n    \"metadata\": { \"source\": \"training\", \"topic\": \"ml-methods\" }\n  },\n  {\n    \"pageContent\": \"Paris is the capital of France and is famous for the Eiffel Tower.\",\n    \"metadata\": { \"source\": \"geography\", \"topic\": \"unrelated\" }\n  },\n  {\n    \"pageContent\": \"Reinforcement learning involves training agents to make decisions by rewarding desired behaviors.\",\n    \"metadata\": { \"source\": \"rl\", \"topic\": \"ml-methods\" }\n  }\n];\n\nreturn documents.map(doc => ({ json: doc }));"
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+      "name": "Generate Test Documents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "bge-reranker-v2-m3",
+        "query": "What is machine learning and deep learning?",
+        "documentsSource": "items",
+        "contentField": "pageContent",
+        "topK": 3,
+        "threshold": 0.3,
+        "instruction": "Given a question about AI and machine learning, retrieve the most relevant passages that answer the question",
+        "additionalOptions": {
+          "includeOriginalScores": false,
+          "timeout": 30000,
+          "batchSize": 10,
+          "outputFormat": "documents"
+        }
+      },
+      "id": "c3d4e5f6-a7b8-9012-cdef-345678901234",
+      "name": "Ollama Reranker Workflow",
+      "type": "n8n-nodes-ollama-reranker.ollamaRerankerWorkflow",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "1",
+          "name": "Ollama API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "result1",
+              "name": "query",
+              "value": "={{ $json.query }}",
+              "type": "string"
+            },
+            {
+              "id": "result2",
+              "name": "total_documents",
+              "value": "={{ $json.documents.length }}",
+              "type": "number"
+            },
+            {
+              "id": "result3",
+              "name": "top_document",
+              "value": "={{ $json.documents[0].pageContent }}",
+              "type": "string"
+            },
+            {
+              "id": "result4",
+              "name": "top_score",
+              "value": "={{ $json.documents[0]._rerankScore }}",
+              "type": "number"
+            },
+            {
+              "id": "result5",
+              "name": "all_scores",
+              "value": "={{ $json.documents.map(d => d._rerankScore).join(', ') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d4e5f6a7-b8c9-0123-def0-456789012345",
+      "name": "Format Results",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Display reranked documents with scores\nconst input = $input.first().json;\n\nconsole.log('\\n=== RERANKING RESULTS ===');\nconsole.log(`Query: ${input.query}`);\nconsole.log(`Total documents returned: ${input.total_documents}`);\nconsole.log('\\n--- Top Ranked Documents ---');\n\nconst prevNode = $('Ollama Reranker Workflow').first().json;\nprevNode.documents.forEach((doc, index) => {\n  console.log(`\\n${index + 1}. Score: ${doc._rerankScore.toFixed(3)}`);\n  console.log(`   Content: ${doc.pageContent.substring(0, 100)}...`);\n  console.log(`   Topic: ${doc.metadata.topic}`);\n});\n\nconsole.log('\\n========================\\n');\n\nreturn $input.all();"
+      },
+      "id": "e5f6a7b8-c9d0-1234-ef01-567890123456",
+      "name": "Display Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [
+        [
+          {
+            "node": "Generate Test Documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Test Documents": {
+      "main": [
+        [
+          {
+            "node": "Ollama Reranker Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Reranker Workflow": {
+      "main": [
+        [
+          {
+            "node": "Format Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Results": {
+      "main": [
+        [
+          {
+            "node": "Display Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "test-v1",
+  "meta": {
+    "instanceId": "test"
+  },
+  "id": "test-ollama-reranker",
+  "tags": []
+}
