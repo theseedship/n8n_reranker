@@ -72,10 +72,46 @@ services:
     environment:
       - NODE_ENV=development
 
+  # Ollama service for embeddings
+  ollama:
+    image: ollama/ollama:latest
+    container_name: n8n_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:11434/api/tags || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama model loader - pulls Qwen3 embedding model on startup
+  ollama-setup:
+    image: curlimages/curl:latest
+    container_name: n8n_ollama_setup
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      echo 'Waiting for Ollama to be fully ready...';
+      sleep 5;
+      echo 'Pulling Qwen3-Embedding-0.6B model...';
+      curl -X POST http://ollama:11434/api/pull -d '{\"name\": \"qwen3-embedding:0.6b\"}';
+      echo 'Model pull initiated. Check ollama logs for progress.';
+      "
+    restart: "no"
+
 volumes:
   postgres_data:
     driver: local
   n8n_data:
     driver: local
   plugin_node_modules:
+    driver: local
+  ollama_data:
     driver: local
