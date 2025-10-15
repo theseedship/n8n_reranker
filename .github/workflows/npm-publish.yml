@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd custom-nodes
-          npm ci
+          npm install
 
       - name: Build package
         run: |
