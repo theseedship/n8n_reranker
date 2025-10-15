@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-ollama-reranker",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Ollama Reranker provider for n8n Vector Store nodes - rerank documents using local Ollama models",
   "main": "index.js",
   "author": "Gabriel BRUMENT",
