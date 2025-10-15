@@ -57,6 +57,10 @@ export class OllamaRerankerWorkflow implements INodeType {
 				required: true,
 			},
 		],
+		requestDefaults: {
+			ignoreHttpStatusErrors: true,
+			baseURL: '={{ $credentials.baseUrl.replace(new RegExp("/$"), "") }}',
+		},
 		properties: [
 			// Model selection with dynamic loading (using routing like Ollama Chat Model)
 			{
@@ -301,13 +305,13 @@ export class OllamaRerankerWorkflow implements INodeType {
 
 		// Get credentials
 		const credentials = await this.getCredentials('ollamaApi');
-		if (!credentials?.host) {
+		if (!credentials?.baseUrl) {
 			throw new NodeOperationError(
 				this.getNode(),
-				'Ollama host not configured. Please add Ollama API credentials.',
+				'Ollama Base URL not configured. Please add Ollama API credentials.',
 			);
 		}
-		const ollamaHost = (credentials.host as string).replace(/\/$/, '');
+		const ollamaHost = (credentials.baseUrl as string).replace(/\/$/, '');
 
 		// Get model
 		const model = this.getNodeParameter('model', 0) as string;

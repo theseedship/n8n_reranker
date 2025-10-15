@@ -56,6 +56,10 @@ export class OllamaReranker implements INodeType {
 				required: true,
 			},
 		],
+		requestDefaults: {
+			ignoreHttpStatusErrors: true,
+			baseURL: '={{ $credentials.baseUrl.replace(new RegExp("/$"), "") }}',
+		},
 		properties: [
 			{
 				displayName: 'Model',
@@ -221,13 +225,13 @@ export class OllamaReranker implements INodeType {
 
 		// Get credentials (n8n's built-in ollamaApi)
 		const credentials = await this.getCredentials('ollamaApi');
-		if (!credentials?.host) {
+		if (!credentials?.baseUrl) {
 			throw new NodeOperationError(
 				this.getNode(),
-				'Ollama host not configured. Please add Ollama API credentials with a valid host URL.',
+				'Ollama Base URL not configured. Please add Ollama API credentials with a valid Base URL.',
 			);
 		}
-		const ollamaHost = (credentials.host as string).replace(/\/$/, '');
+		const ollamaHost = (credentials.baseUrl as string).replace(/\/$/, '');
 
 		/**
 		 * Reranker Provider Object
