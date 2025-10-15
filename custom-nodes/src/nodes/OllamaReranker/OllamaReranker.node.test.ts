@@ -1,5 +1,5 @@
 import { OllamaReranker } from './OllamaReranker.node';
-import { ISupplyDataFunctions, NodeOperationError, NodeApiError } from 'n8n-workflow';
+import { ISupplyDataFunctions } from 'n8n-workflow';
 
 describe('OllamaReranker', () => {
 	let node: OllamaReranker;

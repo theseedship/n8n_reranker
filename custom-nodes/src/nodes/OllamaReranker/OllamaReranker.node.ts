@@ -189,7 +189,7 @@ export class OllamaReranker implements INodeType {
 		let model = this.getNodeParameter('model', 0) as string;
 		if (model === 'custom') {
 			model = this.getNodeParameter('customModel', 0) as string;
-			if (!model || !model.trim()) {
+			if (!model?.trim()) {
 				throw new NodeOperationError(
 					this.getNode(),
 					'Custom model name is required when "Custom Model" is selected',
@@ -204,9 +204,9 @@ export class OllamaReranker implements INodeType {
 			batchSize?: number;
 		};
 
-		const timeout = additionalOptions.timeout || 30000;
-		const batchSize = additionalOptions.batchSize || 10;
-		const includeOriginalScores = additionalOptions.includeOriginalScores || false;
+		const timeout = additionalOptions.timeout ?? 30000;
+		const batchSize = additionalOptions.batchSize ?? 10;
+		const includeOriginalScores = additionalOptions.includeOriginalScores ?? false;
 
 		// Get credentials (n8n's built-in ollamaApi)
 		const credentials = await this.getCredentials('ollamaApi');
@@ -253,7 +253,7 @@ export class OllamaReranker implements INodeType {
 				}
 
 				// Validate inputs
-				if (!query || !query.trim()) {
+				if (!query?.trim()) {
 					throw new NodeOperationError(self.getNode(), 'Query cannot be empty');
 				}
 
@@ -284,19 +284,18 @@ export class OllamaReranker implements INodeType {
 
 				try {
 					// Rerank documents using Ollama
-					const rerankedDocs = await rerankDocuments(
-						self,
+					const rerankedDocs = await rerankDocuments(self, {
 						ollamaHost,
 						model,
 						query,
-						processedDocs,
+						documents: processedDocs,
 						instruction,
 						topK,
 						threshold,
 						batchSize,
 						timeout,
 						includeOriginalScores,
-					);
+					});
 
 					self.logger.debug(`Reranking complete: ${rerankedDocs.length} documents returned`);
 
@@ -343,17 +342,20 @@ export class OllamaReranker implements INodeType {
  */
 async function rerankDocuments(
 	context: ISupplyDataFunctions,
-	ollamaHost: string,
-	model: string,
-	query: string,
-	documents: any[],
-	instruction: string,
-	topK: number,
-	threshold: number,
-	batchSize: number,
-	timeout: number,
-	includeOriginalScores: boolean,
+	config: {
+		ollamaHost: string;
+		model: string;
+		query: string;
+		documents: any[];
+		instruction: string;
+		topK: number;
+		threshold: number;
+		batchSize: number;
+		timeout: number;
+		includeOriginalScores: boolean;
+	},
 ): Promise<any[]> {
+	const { ollamaHost, model, query, documents, instruction, topK, threshold, batchSize, timeout, includeOriginalScores } = config;
 	const results: Array<{ index: number; score: number }> = [];
 
 	// Process all documents concurrently with controlled concurrency
@@ -542,78 +544,79 @@ Score:`;
 }
 
 /**
- * Parse Ollama reranker response to extract relevance score
- * Uses model-specific parsing logic for better accuracy
+ * Parse BGE model response to extract relevance score
  */
-function parseRerankerResponse(model: string, response: any): number {
-	if (!response || !response.response) {
-		return 0.0;
+function parseBGEScore(output: string, outputLower: string): number | null {
+	// Try to extract floating point number
+	const scoreRegex = /(\d*\.?\d+)/;
+	const scoreMatch = scoreRegex.exec(output);
+	if (scoreMatch) {
+		const score = parseFloat(scoreMatch[1]);
+		// BGE returns scores in various ranges, normalize to 0-1
+		if (score > 1 && score <= 10) {
+			return score / 10;
+		} else if (score > 10) {
+			return score / 100;
+		}
+		return Math.min(Math.max(score, 0), 1); // Clamp to 0-1
 	}
 
-	const output = response.response as string;
-	const outputLower = output.toLowerCase();
-	const isBGE = model.toLowerCase().includes('bge');
-	const isQwen = model.toLowerCase().includes('qwen');
-
-	// BGE models typically return numeric scores directly
-	if (isBGE) {
-		// Try to extract floating point number
-		const scoreMatch = output.match(/([0-9]*\.?[0-9]+)/);
-		if (scoreMatch) {
-			const score = parseFloat(scoreMatch[1]);
-			// BGE returns scores in various ranges, normalize to 0-1
-			if (score > 1 && score <= 10) {
-				return score / 10;
-			} else if (score > 10) {
-				return score / 100;
-			}
-			return Math.min(Math.max(score, 0), 1); // Clamp to 0-1
-		}
-
-		// Fallback: check for keywords
-		if (outputLower.includes('high') || outputLower.includes('relevant')) {
-			return 0.8;
-		}
-		if (outputLower.includes('low') || outputLower.includes('irrelevant')) {
-			return 0.2;
-		}
+	// Fallback: check for keywords
+	if (outputLower.includes('high') || outputLower.includes('relevant')) {
+		return 0.8;
+	}
+	if (outputLower.includes('low') || outputLower.includes('irrelevant')) {
+		return 0.2;
 	}
 
-	// Qwen models return yes/no with reasoning
-	if (isQwen) {
-		// Look for explicit yes/no in the response
-		const yesMatch = outputLower.match(/\b(yes|relevant|positive|match)\b/);
-		const noMatch = outputLower.match(/\b(no|irrelevant|negative|not\s+relevant)\b/);
+	return null;
+}
 
-		if (yesMatch && !noMatch) {
-			// Higher confidence for detailed explanations
-			const hasReasoning = output.length > 100;
-			const hasMultiplePositives = (output.match(/relevant|yes|match/gi) || []).length > 1;
+/**
+ * Parse Qwen model response to extract relevance score
+ */
+function parseQwenScore(output: string, outputLower: string): number | null {
+	// Look for explicit yes/no in the response
+	const yesRegex = /\b(yes|relevant|positive|match)\b/;
+	const noRegex = /\b(no|irrelevant|negative|not\s+relevant)\b/;
+	const yesMatch = yesRegex.exec(outputLower);
+	const noMatch = noRegex.exec(outputLower);
 
-			if (hasReasoning && hasMultiplePositives) return 0.95;
-			if (hasReasoning) return 0.85;
-			return 0.75;
-		}
+	if (yesMatch && !noMatch) {
+		// Higher confidence for detailed explanations
+		const hasReasoning = output.length > 100;
+		const hasMultiplePositives = (output.match(/relevant|yes|match/gi) || []).length > 1;
 
-		if (noMatch && !yesMatch) {
-			// Low scores for negative responses
-			const hasStrongNegative = outputLower.includes('completely') ||
-				outputLower.includes('totally') ||
-				outputLower.includes('not at all');
-			return hasStrongNegative ? 0.05 : 0.15;
-		}
-
-		// Mixed signals - check which appears first
-		if (yesMatch && noMatch) {
-			const yesIndex = output.toLowerCase().indexOf(yesMatch[0]);
-			const noIndex = output.toLowerCase().indexOf(noMatch[0]);
-			return yesIndex < noIndex ? 0.6 : 0.4;
-		}
+		if (hasReasoning && hasMultiplePositives) return 0.95;
+		if (hasReasoning) return 0.85;
+		return 0.75;
 	}
 
-	// Generic parsing for unknown models
+	if (noMatch && !yesMatch) {
+		// Low scores for negative responses
+		const hasStrongNegative = outputLower.includes('completely') ||
+			outputLower.includes('totally') ||
+			outputLower.includes('not at all');
+		return hasStrongNegative ? 0.05 : 0.15;
+	}
+
+	// Mixed signals - check which appears first
+	if (yesMatch && noMatch) {
+		const yesIndex = output.toLowerCase().indexOf(yesMatch[0]);
+		const noIndex = output.toLowerCase().indexOf(noMatch[0]);
+		return yesIndex < noIndex ? 0.6 : 0.4;
+	}
+
+	return null;
+}
+
+/**
+ * Parse generic model response with fallback logic
+ */
+function parseGenericScore(output: string, outputLower: string): number {
 	// Try numeric extraction first
-	const numericMatch = output.match(/([0-9]*\.?[0-9]+)/);
+	const numericRegex = /(\d*\.?\d+)/;
+	const numericMatch = numericRegex.exec(output);
 	if (numericMatch) {
 		const score = parseFloat(numericMatch[1]);
 		if (score >= 0 && score <= 1) return score;
@@ -636,4 +639,33 @@ function parseRerankerResponse(model: string, response: any): number {
 
 	// Default to neutral if completely ambiguous
 	return 0.5;
+}
+
+/**
+ * Parse Ollama reranker response to extract relevance score
+ * Uses model-specific parsing logic for better accuracy
+ */
+function parseRerankerResponse(model: string, response: any): number {
+	if (!response?.response) {
+		return 0.0;
+	}
+
+	const output = response.response as string;
+	const outputLower = output.toLowerCase();
+	const isBGE = model.toLowerCase().includes('bge');
+	const isQwen = model.toLowerCase().includes('qwen');
+
+	// Try model-specific parsers
+	if (isBGE) {
+		const score = parseBGEScore(output, outputLower);
+		if (score !== null) return score;
+	}
+
+	if (isQwen) {
+		const score = parseQwenScore(output, outputLower);
+		if (score !== null) return score;
+	}
+
+	// Fallback to generic parsing
+	return parseGenericScore(output, outputLower);
 }
