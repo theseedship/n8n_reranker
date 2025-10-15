@@ -3,6 +3,21 @@
   "version": "1.0.0",
   "description": "Ollama Reranker provider for n8n Vector Store nodes - rerank documents using local Ollama models",
   "main": "index.js",
+  "author": "Gabriel BRUMENT",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theseedship/n8n_reranker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/theseedship/n8n_reranker/issues"
+  },
+  "homepage": "https://github.com/theseedship/n8n_reranker#readme",
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
