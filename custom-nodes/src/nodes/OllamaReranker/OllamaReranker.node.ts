@@ -1,6 +1,4 @@
 import {
-	ILoadOptionsFunctions,
-	INodePropertyOptions,
 	ISupplyDataFunctions,
 	SupplyData,
 	INodeType,
@@ -63,11 +61,42 @@ export class OllamaReranker implements INodeType {
 				displayName: 'Model',
 				name: 'model',
 				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getModels',
-				},
 				default: '',
 				description: 'The reranker model to use - models are loaded from your configured Ollama/Custom API',
+				typeOptions: {
+					loadOptions: {
+						routing: {
+							request: {
+								method: 'GET',
+								url: '/api/tags',
+							},
+							output: {
+								postReceive: [
+									{
+										type: 'rootProperty',
+										properties: {
+											property: 'models',
+										},
+									},
+									{
+										type: 'setKeyValue',
+										properties: {
+											name: '={{$responseItem.name}}',
+											value: '={{$responseItem.name}}',
+										},
+									},
+									{
+										type: 'sort',
+										properties: {
+											key: 'name',
+										},
+									},
+								],
+							},
+						},
+					},
+				},
+				required: true,
 			},
 			{
 				displayName: 'API Type',
@@ -157,52 +186,6 @@ export class OllamaReranker implements INodeType {
 				],
 			},
 		],
-	};
-
-	methods = {
-		loadOptions: {
-			/**
-			 * Load models from Ollama/Custom Rerank API
-			 * Dynamically fetches available models from /api/tags endpoint
-			 */
-			async getModels(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const credentials = await this.getCredentials('ollamaApi');
-				if (!credentials?.host) {
-					return [];
-				}
-
-				const baseUrl = (credentials.host as string).replace(/\/$/, '');
-
-				try {
-					const response = await this.helpers.httpRequest({
-						method: 'GET',
-						url: `${baseUrl}/api/tags`,
-						json: true,
-						timeout: 5000,
-					});
-
-					if (!response?.models || !Array.isArray(response.models)) {
-						return [];
-					}
-
-					// Sort models alphabetically
-					const models = response.models.sort((a: any, b: any) => {
-						const nameA = a.name || '';
-						const nameB = b.name || '';
-						return nameA.localeCompare(nameB);
-					});
-
-					return models.map((model: any) => ({
-						name: model.name,
-						value: model.name,
-						description: model.details || `Size: ${Math.round((model.size || 0) / 1024 / 1024)}MB`,
-					}));
-				} catch (error) {
-					// If API call fails, return empty array (user can still type model name manually)
-					return [];
-				}
-			},
-		},
 	};
 
 	/**
