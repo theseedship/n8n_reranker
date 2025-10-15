@@ -29,5 +29,5 @@ WORKDIR /home/node
 # Expose n8n port
 EXPOSE 5678
 
-# Start n8n
-CMD ["n8n"]
+# Use the default entrypoint from the base image
+# No CMD override needed - the base image handles it

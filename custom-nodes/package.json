@@ -1,7 +1,7 @@
 {
-  "name": "n8n-custom-nodes",
+  "name": "n8n-nodes-ollama-reranker",
   "version": "1.0.0",
-  "description": "Custom n8n nodes for plugin development",
+  "description": "Ollama Reranker provider for n8n Vector Store nodes - rerank documents using local Ollama models",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
@@ -12,16 +12,19 @@
   "keywords": [
     "n8n",
     "n8n-nodes",
-    "n8n-community-node-package"
+    "n8n-community-node-package",
+    "ollama",
+    "reranker",
+    "vector-store",
+    "rag",
+    "ai"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
     "nodes": [
-      "dist/nodes/ExampleNode/ExampleNode.node.js"
+      "dist/nodes/OllamaReranker/OllamaReranker.node.js"
     ],
-    "credentials": [
-      "dist/credentials/ExampleCredentials.credentials.js"
-    ]
+    "credentials": []
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
