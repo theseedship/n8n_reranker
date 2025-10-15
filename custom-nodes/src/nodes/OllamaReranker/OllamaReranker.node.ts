@@ -240,8 +240,17 @@ export class OllamaReranker implements INodeType {
 				const { query, documents } = input || {};
 
 				// Get parameters with optional overrides from input
-				const topK = input?.topN ?? (self.getNodeParameter('topK', 0) as number);
+				let topK = input?.topN ?? (self.getNodeParameter('topK', 0) as number);
 				const threshold = input?.threshold ?? (self.getNodeParameter('threshold', 0) as number);
+
+				// Validate topN parameter
+				if (topK < 1) {
+					throw new NodeOperationError(self.getNode(), 'topN/topK must be at least 1');
+				}
+				if (topK > 100) {
+					self.logger.warn(`topN=${topK} exceeds recommended maximum of 100, clamping to 100`);
+					topK = 100;
+				}
 
 				// Validate inputs
 				if (!query || !query.trim()) {
@@ -347,28 +356,32 @@ async function rerankDocuments(
 ): Promise<any[]> {
 	const results: Array<{ index: number; score: number }> = [];
 
-	// Process documents in batches for efficiency
-	for (let i = 0; i < documents.length; i += batchSize) {
-		const batch = documents.slice(i, i + batchSize);
+	// Process all documents concurrently with controlled concurrency
+	const promises: Array<Promise<{ index: number; score: number }>> = [];
 
-		// Process batch concurrently
-		const promises = batch.map((doc, batchIndex) =>
-			scoreDocument(
-				context,
-				ollamaHost,
-				model,
-				query,
-				doc.pageContent,
-				instruction,
-				timeout,
-			).then(score => ({
-				index: i + batchIndex,
-				score,
-			})),
-		);
+	for (let i = 0; i < documents.length; i++) {
+		const doc = documents[i];
+		const promise = scoreDocument(
+			context,
+			ollamaHost,
+			model,
+			query,
+			doc.pageContent,
+			instruction,
+			timeout,
+		).then(score => ({
+			index: i,
+			score,
+		}));
 
-		const batchResults = await Promise.all(promises);
-		results.push(...batchResults);
+		promises.push(promise);
+
+		// Process in batches to avoid overwhelming the API
+		if (promises.length >= batchSize || i === documents.length - 1) {
+			const batchResults = await Promise.all(promises);
+			results.push(...batchResults);
+			promises.length = 0; // Clear the array
+		}
 	}
 
 	// Filter by threshold and sort by score (descending)
@@ -395,7 +408,7 @@ async function rerankDocuments(
 }
 
 /**
- * Score a single document against the query using Ollama reranker model
+ * Score a single document against the query using Ollama reranker model with retry logic
  */
 async function scoreDocument(
 	context: ISupplyDataFunctions,
@@ -406,65 +419,109 @@ async function scoreDocument(
 	instruction: string,
 	timeout: number,
 ): Promise<number> {
-	// Format prompt for Qwen3-Reranker models
-	// See: https://huggingface.co/dengcao/Qwen3-Reranker-4B
-	const prompt = formatRerankerPrompt(query, documentContent, instruction);
+	// Format prompt based on model type
+	const prompt = formatRerankerPrompt(model, query, documentContent, instruction);
 
-	try {
-		// Use Ollama /api/generate endpoint for reranker models
-		const response = await context.helpers.httpRequest({
-			method: 'POST',
-			url: `${ollamaHost}/api/generate`,
-			headers: {
-				'Content-Type': 'application/json',
-				Accept: 'application/json',
-			},
-			body: {
-				model,
-				prompt,
-				stream: false,
-				options: {
-					temperature: 0.0, // Deterministic scoring
+	const maxRetries = 3;
+	let lastError: any;
+
+	for (let attempt = 0; attempt < maxRetries; attempt++) {
+		try {
+			// Use Ollama /api/generate endpoint for reranker models
+			const response = await context.helpers.httpRequest({
+				method: 'POST',
+				url: `${ollamaHost}/api/generate`,
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json',
 				},
-			},
-			json: true,
-			timeout,
-		});
-
-		// Parse the response to extract relevance score
-		const score = parseRerankerResponse(response);
-		return score;
-	} catch (error: any) {
-		if (error?.name === 'AbortError' || error?.code === 'ETIMEDOUT') {
-			throw new NodeApiError(context.getNode(), error, {
-				message: `Request timeout after ${timeout}ms`,
-				description: `Model: ${model}\nEndpoint: ${ollamaHost}/api/generate`,
+				body: {
+					model,
+					prompt,
+					stream: false,
+					options: {
+						temperature: 0.0, // Deterministic scoring
+					},
+				},
+				json: true,
+				timeout,
 			});
-		}
 
-		if (error?.response?.body) {
-			throw new NodeApiError(context.getNode(), error, {
-				message: `Ollama API Error (${error.response.statusCode})`,
-				description: `Endpoint: ${ollamaHost}/api/generate\nModel: ${model}\nResponse: ${JSON.stringify(error.response.body, null, 2)}`,
-			});
-		}
+			// Parse the response to extract relevance score
+			const score = parseRerankerResponse(model, response);
+			return score;
+		} catch (error: any) {
+			lastError = error;
 
-		throw new NodeApiError(context.getNode(), error as JsonObject, {
-			message: 'Ollama reranking request failed',
-			description: `Endpoint: ${ollamaHost}/api/generate\nModel: ${model}\nError: ${error.message}`,
+			// Don't retry on permanent errors
+			if (error?.response?.statusCode === 404 || error?.response?.statusCode === 400) {
+				break;
+			}
+
+			// Retry on transient errors (timeout, 5xx, network issues)
+			if (attempt < maxRetries - 1) {
+				const isTransient = error?.name === 'AbortError' ||
+					error?.code === 'ETIMEDOUT' ||
+					error?.response?.statusCode >= 500;
+
+				if (isTransient) {
+					// Exponential backoff: 100ms, 200ms, 400ms
+					await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
+					continue;
+				}
+			}
+			break;
+		}
+	}
+
+	// Handle final error after retries
+	const error = lastError;
+	if (error?.name === 'AbortError' || error?.code === 'ETIMEDOUT') {
+		throw new NodeApiError(context.getNode(), error, {
+			message: `Request timeout after ${timeout}ms (tried ${maxRetries} times)`,
+			description: `Model: ${model}\nEndpoint: ${ollamaHost}/api/generate`,
 		});
 	}
+
+	if (error?.response?.body) {
+		throw new NodeApiError(context.getNode(), error, {
+			message: `Ollama API Error (${error.response.statusCode})`,
+			description: `Endpoint: ${ollamaHost}/api/generate\nModel: ${model}\nResponse: ${JSON.stringify(error.response.body, null, 2)}`,
+		});
+	}
+
+	throw new NodeApiError(context.getNode(), error as JsonObject, {
+		message: 'Ollama reranking request failed',
+		description: `Endpoint: ${ollamaHost}/api/generate\nModel: ${model}\nError: ${error.message}`,
+	});
 }
 
 /**
- * Format prompt for Qwen3-Reranker models
+ * Format prompt based on reranker model type
  *
- * Qwen3-Reranker expects a specific format:
- * <|im_start|>system...
+ * Different models expect different prompt formats:
+ * - BGE Reranker: Simple query + document format
+ * - Qwen3-Reranker: Structured chat format with system/user/assistant tags
  */
-function formatRerankerPrompt(query: string, documentContent: string, instruction: string): string {
-	// Qwen3-Reranker prompt format
-	return `<|im_start|>system
+function formatRerankerPrompt(model: string, query: string, documentContent: string, instruction: string): string {
+	// Detect model type
+	const isBGE = model.toLowerCase().includes('bge');
+	const isQwen = model.toLowerCase().includes('qwen');
+
+	if (isBGE) {
+		// BGE Reranker uses a simple format
+		// See: https://huggingface.co/BAAI/bge-reranker-v2-m3
+		return `Instruction: ${instruction}
+
+Query: ${query}
+
+Document: ${documentContent}
+
+Relevance:`;
+	} else if (isQwen) {
+		// Qwen3-Reranker uses structured chat format
+		// See: https://huggingface.co/dengcao/Qwen3-Reranker-4B
+		return `<|im_start|>system
 Judge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>
 <|im_start|>user
 <Instruct>: ${instruction}
@@ -472,38 +529,111 @@ Judge whether the Document meets the requirements based on the Query and the Ins
 <Document>: ${documentContent}<|im_end|>
 <|im_start|>assistant
 <think>`;
+	}
+
+	// Default format for unknown models (similar to BGE)
+	return `Task: ${instruction}
+
+Query: ${query}
+
+Document: ${documentContent}
+
+Score:`;
 }
 
 /**
  * Parse Ollama reranker response to extract relevance score
+ * Uses model-specific parsing logic for better accuracy
  */
-function parseRerankerResponse(response: any): number {
+function parseRerankerResponse(model: string, response: any): number {
 	if (!response || !response.response) {
 		return 0.0;
 	}
 
-	const output = (response.response as string).toLowerCase();
+	const output = response.response as string;
+	const outputLower = output.toLowerCase();
+	const isBGE = model.toLowerCase().includes('bge');
+	const isQwen = model.toLowerCase().includes('qwen');
 
-	// Check for explicit yes/no responses
-	if (output.includes('yes') || output.includes('relevant')) {
-		// Calculate confidence based on response characteristics
-		// More detailed responses typically indicate higher confidence
-		const confidence = output.length > 50 ? 0.9 : 0.7;
-		return confidence;
+	// BGE models typically return numeric scores directly
+	if (isBGE) {
+		// Try to extract floating point number
+		const scoreMatch = output.match(/([0-9]*\.?[0-9]+)/);
+		if (scoreMatch) {
+			const score = parseFloat(scoreMatch[1]);
+			// BGE returns scores in various ranges, normalize to 0-1
+			if (score > 1 && score <= 10) {
+				return score / 10;
+			} else if (score > 10) {
+				return score / 100;
+			}
+			return Math.min(Math.max(score, 0), 1); // Clamp to 0-1
+		}
+
+		// Fallback: check for keywords
+		if (outputLower.includes('high') || outputLower.includes('relevant')) {
+			return 0.8;
+		}
+		if (outputLower.includes('low') || outputLower.includes('irrelevant')) {
+			return 0.2;
+		}
 	}
 
-	if (output.includes('no') || output.includes('not relevant') || output.includes('irrelevant')) {
-		return 0.1;
+	// Qwen models return yes/no with reasoning
+	if (isQwen) {
+		// Look for explicit yes/no in the response
+		const yesMatch = outputLower.match(/\b(yes|relevant|positive|match)\b/);
+		const noMatch = outputLower.match(/\b(no|irrelevant|negative|not\s+relevant)\b/);
+
+		if (yesMatch && !noMatch) {
+			// Higher confidence for detailed explanations
+			const hasReasoning = output.length > 100;
+			const hasMultiplePositives = (output.match(/relevant|yes|match/gi) || []).length > 1;
+
+			if (hasReasoning && hasMultiplePositives) return 0.95;
+			if (hasReasoning) return 0.85;
+			return 0.75;
+		}
+
+		if (noMatch && !yesMatch) {
+			// Low scores for negative responses
+			const hasStrongNegative = outputLower.includes('completely') ||
+				outputLower.includes('totally') ||
+				outputLower.includes('not at all');
+			return hasStrongNegative ? 0.05 : 0.15;
+		}
+
+		// Mixed signals - check which appears first
+		if (yesMatch && noMatch) {
+			const yesIndex = output.toLowerCase().indexOf(yesMatch[0]);
+			const noIndex = output.toLowerCase().indexOf(noMatch[0]);
+			return yesIndex < noIndex ? 0.6 : 0.4;
+		}
 	}
 
-	// If no clear yes/no, try to parse numeric score
-	const scoreMatch = output.match(/(\d+\.?\d*)/);
-	if (scoreMatch) {
-		const score = parseFloat(scoreMatch[1]);
-		// Normalize if needed (assume 0-10 scale if > 1)
-		return score > 1 ? score / 10 : score;
+	// Generic parsing for unknown models
+	// Try numeric extraction first
+	const numericMatch = output.match(/([0-9]*\.?[0-9]+)/);
+	if (numericMatch) {
+		const score = parseFloat(numericMatch[1]);
+		if (score >= 0 && score <= 1) return score;
+		if (score > 1 && score <= 10) return score / 10;
+		if (score > 10 && score <= 100) return score / 100;
 	}
 
-	// Default to neutral score if ambiguous
+	// Keyword-based scoring
+	const positiveKeywords = ['relevant', 'yes', 'high', 'strong', 'good', 'match', 'related'];
+	const negativeKeywords = ['irrelevant', 'no', 'low', 'weak', 'poor', 'unrelated', 'different'];
+
+	const positiveCount = positiveKeywords.filter(kw => outputLower.includes(kw)).length;
+	const negativeCount = negativeKeywords.filter(kw => outputLower.includes(kw)).length;
+
+	if (positiveCount > negativeCount) {
+		return 0.5 + (positiveCount * 0.1);
+	} else if (negativeCount > positiveCount) {
+		return 0.5 - (negativeCount * 0.1);
+	}
+
+	// Default to neutral if completely ambiguous
 	return 0.5;
 }
