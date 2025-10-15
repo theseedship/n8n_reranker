@@ -32,6 +32,7 @@ export class OllamaReranker implements INodeType {
 		defaults: {
 			name: 'Ollama Reranker',
 		},
+		usableAsTool: true,
 		codex: {
 			categories: ['AI'],
 			subcategories: {
@@ -210,6 +211,12 @@ export class OllamaReranker implements INodeType {
 
 		// Get credentials (n8n's built-in ollamaApi)
 		const credentials = await this.getCredentials('ollamaApi');
+		if (!credentials?.host) {
+			throw new NodeOperationError(
+				this.getNode(),
+				'Ollama host not configured. Please add Ollama API credentials with a valid host URL.',
+			);
+		}
 		const ollamaHost = (credentials.host as string).replace(/\/$/, '');
 
 		/**
