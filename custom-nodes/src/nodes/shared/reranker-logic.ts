@@ -20,16 +20,24 @@ export interface RerankConfig {
 	batchSize: number;
 	timeout: number;
 	includeOriginalScores: boolean;
+	apiType?: 'ollama' | 'custom'; // API type selection
 }
 
 /**
- * Rerank documents using Ollama reranker model
+ * Rerank documents using Ollama reranker model or Custom Rerank API
  */
 export async function rerankDocuments(
 	context: RerankerContext,
 	config: RerankConfig,
 ): Promise<any[]> {
-	const { ollamaHost, model, query, documents, instruction, topK, threshold, batchSize, timeout, includeOriginalScores } = config;
+	const { ollamaHost, model, query, documents, instruction, topK, threshold, batchSize, timeout, includeOriginalScores, apiType = 'ollama' } = config;
+
+	// Use Custom Rerank API if specified
+	if (apiType === 'custom') {
+		return await rerankWithCustomAPI(context, config);
+	}
+
+	// Otherwise use Ollama Generate API (original logic)
 	const results: Array<{ index: number; score: number }> = [];
 
 	// Process all documents concurrently with controlled concurrency
@@ -81,6 +89,89 @@ export async function rerankDocuments(
 
 		return rerankedDoc;
 	});
+}
+
+/**
+ * Rerank documents using Custom Rerank API (/api/rerank endpoint)
+ * This is for services like deposium-embeddings-turbov2 that implement
+ * a custom /api/rerank endpoint with direct cosine similarity scoring
+ */
+async function rerankWithCustomAPI(
+	context: RerankerContext,
+	config: RerankConfig,
+): Promise<any[]> {
+	const { ollamaHost, model, query, documents, topK, threshold, timeout, includeOriginalScores } = config;
+
+	try {
+		// Extract document content as strings
+		const documentStrings = documents.map(doc => doc.pageContent || JSON.stringify(doc));
+
+		// Call /api/rerank endpoint
+		const response = await context.helpers.httpRequest({
+			method: 'POST',
+			url: `${ollamaHost}/api/rerank`,
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+			},
+			body: {
+				model,
+				query,
+				documents: documentStrings,
+				top_k: topK, // Custom API handles top_k filtering
+			},
+			json: true,
+			timeout,
+		});
+
+		// Parse response: { model: "...", results: [{index, document, relevance_score}] }
+		if (!response?.results || !Array.isArray(response.results)) {
+			throw new NodeApiError(context.getNode(), response as JsonObject, {
+				message: 'Invalid response from Custom Rerank API',
+				description: `Expected {results: [...]} but got: ${JSON.stringify(response)}`,
+			});
+		}
+
+		// Filter by threshold and map to our format
+		const filteredResults = response.results
+			.filter((r: any) => r.relevance_score >= threshold)
+			.map((result: any) => {
+				const originalDoc = documents[result.index];
+				const rerankedDoc: any = {
+					...originalDoc,
+					_rerankScore: result.relevance_score,
+					_originalIndex: result.index,
+				};
+
+				if (includeOriginalScores && originalDoc._originalScore !== undefined) {
+					rerankedDoc._originalScore = originalDoc._originalScore;
+				}
+
+				return rerankedDoc;
+			});
+
+		return filteredResults;
+
+	} catch (error: any) {
+		if (error?.response?.statusCode === 404) {
+			throw new NodeApiError(context.getNode(), error, {
+				message: 'Custom Rerank API endpoint not found',
+				description: `The /api/rerank endpoint was not found at ${ollamaHost}.\nMake sure you're using a service that supports this endpoint (like deposium-embeddings-turbov2).`,
+			});
+		}
+
+		if (error?.response?.body) {
+			throw new NodeApiError(context.getNode(), error, {
+				message: `Custom Rerank API Error (${error.response.statusCode})`,
+				description: `Endpoint: ${ollamaHost}/api/rerank\nModel: ${model}\nResponse: ${JSON.stringify(error.response.body, null, 2)}`,
+			});
+		}
+
+		throw new NodeApiError(context.getNode(), error as JsonObject, {
+			message: 'Custom Rerank API request failed',
+			description: `Endpoint: ${ollamaHost}/api/rerank\nModel: ${model}\nError: ${error.message}`,
+		});
+	}
 }
 
 /**

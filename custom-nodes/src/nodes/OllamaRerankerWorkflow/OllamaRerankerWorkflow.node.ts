@@ -106,6 +106,26 @@ export class OllamaRerankerWorkflow implements INodeType {
 					},
 				},
 			},
+			// API Type selection
+			{
+				displayName: 'API Type',
+				name: 'apiType',
+				type: 'options',
+				options: [
+					{
+						name: 'Ollama Generate API',
+						value: 'ollama',
+						description: 'Standard Ollama /api/generate endpoint (for BGE, Qwen prompt-based rerankers)',
+					},
+					{
+						name: 'Custom Rerank API',
+						value: 'custom',
+						description: 'Custom /api/rerank endpoint (for deposium-embeddings-turbov2, etc.)',
+					},
+				],
+				default: 'ollama',
+				description: 'Which API endpoint to use for reranking',
+			},
 			// Query input (flexible like n8n nodes)
 			{
 				displayName: 'Query',
@@ -307,6 +327,9 @@ export class OllamaRerankerWorkflow implements INodeType {
 			}
 		}
 
+		// Get API type
+		const apiType = this.getNodeParameter('apiType', 0, 'ollama') as 'ollama' | 'custom';
+
 		// Get common parameters
 		const instruction = this.getNodeParameter('instruction', 0) as string;
 		const topK = this.getNodeParameter('topK', 0) as number;
@@ -415,6 +438,7 @@ export class OllamaRerankerWorkflow implements INodeType {
 					batchSize,
 					timeout,
 					includeOriginalScores,
+					apiType,
 				});
 
 				// Format output
