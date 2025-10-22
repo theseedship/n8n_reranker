@@ -288,6 +288,80 @@ export class OllamaRerankerWorkflow implements INodeType {
 						default: 'documents',
 						description: 'How to format output documents',
 					},
+					// VL Classifier specific options
+					{
+						displayName: 'Enable VL Classification',
+						name: 'enableClassification',
+						type: 'boolean',
+						default: true,
+						description: 'Use Vision-Language classifier to analyze document complexity',
+						displayOptions: {
+							show: {
+								'/apiType': ['vl-classifier'],
+							},
+						},
+					},
+					{
+						displayName: 'Classification Strategy',
+						name: 'classificationStrategy',
+						type: 'options',
+						options: [
+							{
+								name: 'Add Metadata Only',
+								value: 'metadata',
+								description: 'Add complexity classification as document metadata',
+							},
+							{
+								name: 'Filter Documents',
+								value: 'filter',
+								description: 'Filter documents based on complexity',
+							},
+							{
+								name: 'Filter + Metadata',
+								value: 'both',
+								description: 'Both filter and add metadata',
+							},
+						],
+						default: 'metadata',
+						description: 'How to use the classification results',
+						displayOptions: {
+							show: {
+								'/apiType': ['vl-classifier'],
+								'enableClassification': [true],
+							},
+						},
+					},
+					{
+						displayName: 'Filter Complexity',
+						name: 'filterComplexity',
+						type: 'options',
+						options: [
+							{
+								name: 'Low Complexity Only',
+								value: 'LOW',
+								description: 'Keep only simple documents (good for OCR)',
+							},
+							{
+								name: 'High Complexity Only',
+								value: 'HIGH',
+								description: 'Keep only complex documents (good for VLM)',
+							},
+							{
+								name: 'Both',
+								value: 'both',
+								description: 'Keep all documents regardless of complexity',
+							},
+						],
+						default: 'both',
+						description: 'Which complexity level to keep when filtering',
+						displayOptions: {
+							show: {
+								'/apiType': ['vl-classifier'],
+								'enableClassification': [true],
+								'classificationStrategy': ['filter', 'both'],
+							},
+						},
+					},
 				],
 			},
 		],
@@ -322,8 +396,12 @@ export class OllamaRerankerWorkflow implements INodeType {
 			);
 		}
 
-		// Get API type
-		const apiType = this.getNodeParameter('apiType', 0, 'ollama') as 'ollama' | 'custom';
+		// Get API type and auto-detect if needed
+		let apiType = this.getNodeParameter('apiType', 0, 'ollama') as string;
+		if (apiType === 'auto') {
+			const { detectServerType } = await import('../shared/reranker-logic');
+			apiType = await detectServerType(this, ollamaHost);
+		}
 
 		// Get common parameters
 		const instruction = this.getNodeParameter('instruction', 0) as string;
@@ -334,12 +412,18 @@ export class OllamaRerankerWorkflow implements INodeType {
 			timeout?: number;
 			batchSize?: number;
 			outputFormat?: string;
+			enableClassification?: boolean;
+			classificationStrategy?: 'filter' | 'metadata' | 'both';
+			filterComplexity?: 'LOW' | 'HIGH' | 'both';
 		};
 
 		const timeout = additionalOptions.timeout ?? 30000;
 		const batchSize = additionalOptions.batchSize ?? 10;
 		const includeOriginalScores = additionalOptions.includeOriginalScores ?? false;
 		const outputFormat = additionalOptions.outputFormat ?? 'documents';
+		const enableClassification = additionalOptions.enableClassification ?? true;
+		const classificationStrategy = additionalOptions.classificationStrategy ?? 'metadata';
+		const filterComplexity = additionalOptions.filterComplexity ?? 'both';
 
 		// Process each input item
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
@@ -433,7 +517,10 @@ export class OllamaRerankerWorkflow implements INodeType {
 					batchSize,
 					timeout,
 					includeOriginalScores,
-					apiType,
+					apiType: apiType as 'ollama' | 'custom' | 'vl-classifier',
+					enableClassification,
+					classificationStrategy: classificationStrategy as 'filter' | 'metadata' | 'both',
+					filterComplexity: filterComplexity as 'LOW' | 'HIGH' | 'both',
 				});
 
 				// Format output

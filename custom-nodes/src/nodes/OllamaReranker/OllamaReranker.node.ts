@@ -187,6 +187,80 @@ export class OllamaReranker implements INodeType {
 						},
 						description: 'Number of documents to process concurrently',
 					},
+					// VL Classifier specific options
+					{
+						displayName: 'Enable VL Classification',
+						name: 'enableClassification',
+						type: 'boolean',
+						default: true,
+						description: 'Use Vision-Language classifier to analyze document complexity',
+						displayOptions: {
+							show: {
+								'/apiType': ['vl-classifier'],
+							},
+						},
+					},
+					{
+						displayName: 'Classification Strategy',
+						name: 'classificationStrategy',
+						type: 'options',
+						options: [
+							{
+								name: 'Add Metadata Only',
+								value: 'metadata',
+								description: 'Add complexity classification as document metadata',
+							},
+							{
+								name: 'Filter Documents',
+								value: 'filter',
+								description: 'Filter documents based on complexity',
+							},
+							{
+								name: 'Filter + Metadata',
+								value: 'both',
+								description: 'Both filter and add metadata',
+							},
+						],
+						default: 'metadata',
+						description: 'How to use the classification results',
+						displayOptions: {
+							show: {
+								'/apiType': ['vl-classifier'],
+								'enableClassification': [true],
+							},
+						},
+					},
+					{
+						displayName: 'Filter Complexity',
+						name: 'filterComplexity',
+						type: 'options',
+						options: [
+							{
+								name: 'Low Complexity Only',
+								value: 'LOW',
+								description: 'Keep only simple documents (good for OCR)',
+							},
+							{
+								name: 'High Complexity Only',
+								value: 'HIGH',
+								description: 'Keep only complex documents (good for VLM)',
+							},
+							{
+								name: 'Both',
+								value: 'both',
+								description: 'Keep all documents regardless of complexity',
+							},
+						],
+						default: 'both',
+						description: 'Which complexity level to keep when filtering',
+						displayOptions: {
+							show: {
+								'/apiType': ['vl-classifier'],
+								'enableClassification': [true],
+								'classificationStrategy': ['filter', 'both'],
+							},
+						},
+					},
 				],
 			},
 		],
@@ -211,17 +285,24 @@ export class OllamaReranker implements INodeType {
 			);
 		}
 
-		const apiType = this.getNodeParameter('apiType', 0, 'ollama') as 'ollama' | 'custom';
+		// Get API type
+		let apiType = this.getNodeParameter('apiType', 0, 'ollama') as string;
 		const instruction = this.getNodeParameter('instruction', 0) as string;
 		const additionalOptions = this.getNodeParameter('additionalOptions', 0, {}) as {
 			includeOriginalScores?: boolean;
 			timeout?: number;
 			batchSize?: number;
+			enableClassification?: boolean;
+			classificationStrategy?: 'filter' | 'metadata' | 'both';
+			filterComplexity?: 'LOW' | 'HIGH' | 'both';
 		};
 
 		const timeout = additionalOptions.timeout ?? 30000;
 		const batchSize = additionalOptions.batchSize ?? 10;
 		const includeOriginalScores = additionalOptions.includeOriginalScores ?? false;
+		const enableClassification = additionalOptions.enableClassification ?? true;
+		const classificationStrategy = additionalOptions.classificationStrategy ?? 'metadata';
+		const filterComplexity = additionalOptions.filterComplexity ?? 'both';
 
 		// Get credentials (n8n's built-in ollamaApi)
 		const credentials = await this.getCredentials('ollamaApi');
@@ -232,6 +313,12 @@ export class OllamaReranker implements INodeType {
 			);
 		}
 		const ollamaHost = (credentials.baseUrl as string).replace(/\/$/, '');
+
+		// Auto-detect server type if needed
+		if (apiType === 'auto') {
+			const { detectServerType } = await import('../shared/reranker-logic');
+			apiType = await detectServerType(this, ollamaHost);
+		}
 
 		/**
 		 * Reranker Provider Object
@@ -304,7 +391,7 @@ export class OllamaReranker implements INodeType {
 				self.logger.debug(`Reranking ${processedDocs.length} documents with model: ${model}`);
 
 				try {
-					// Rerank documents using Ollama or Custom API
+					// Rerank documents using Ollama, Custom API, or VL Classifier
 					const rerankedDocs = await rerankDocuments(self, {
 						ollamaHost,
 						model,
@@ -316,7 +403,10 @@ export class OllamaReranker implements INodeType {
 						batchSize,
 						timeout,
 						includeOriginalScores,
-						apiType,
+						apiType: apiType as 'ollama' | 'custom' | 'vl-classifier',
+						enableClassification,
+						classificationStrategy,
+						filterComplexity,
 					});
 
 					self.logger.debug(`Reranking complete: ${rerankedDocs.length} documents returned`);

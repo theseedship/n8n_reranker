@@ -20,7 +20,27 @@ export interface RerankConfig {
 	batchSize: number;
 	timeout: number;
 	includeOriginalScores: boolean;
-	apiType?: 'ollama' | 'custom'; // API type selection
+	apiType?: 'ollama' | 'custom' | 'vl-classifier'; // API type selection
+	// VL Classifier specific options
+	enableClassification?: boolean;
+	classificationStrategy?: 'filter' | 'metadata' | 'both';
+	filterComplexity?: 'LOW' | 'HIGH' | 'both';
+}
+
+export interface VLClassificationResult {
+	complexity: 'LOW' | 'HIGH';
+	confidence?: number;
+	processingTime?: number;
+	modelUsed?: string;
+}
+
+export interface ServerStatus {
+	status: 'healthy' | 'degraded' | 'error';
+	modelsLoaded?: string[];
+	vramUsage?: number;
+	hasClassifier?: boolean;
+	hasReranker?: boolean;
+	version?: string;
 }
 
 /**
@@ -30,7 +50,27 @@ export async function rerankDocuments(
 	context: RerankerContext,
 	config: RerankConfig,
 ): Promise<any[]> {
-	const { ollamaHost, model, query, documents, instruction, topK, threshold, batchSize, timeout, includeOriginalScores, apiType = 'ollama' } = config;
+	const { 
+		ollamaHost, 
+		model, 
+		query, 
+		documents, 
+		instruction, 
+		topK, 
+		threshold, 
+		batchSize, 
+		timeout, 
+		includeOriginalScores, 
+		apiType = 'ollama',
+		enableClassification = false,
+		classificationStrategy = 'metadata',
+		filterComplexity = 'both'
+	} = config;
+
+	// Handle VL Classifier API with reranking
+	if (apiType === 'vl-classifier' && enableClassification) {
+		return await rerankWithVLClassifier(context, config);
+	}
 
 	// Use Custom Rerank API if specified
 	if (apiType === 'custom') {
@@ -404,6 +444,236 @@ function parseGenericScore(output: string, outputLower: string): number {
 
 	// Default to neutral if completely ambiguous
 	return 0.5;
+}
+
+/**
+ * Check server status to detect capabilities
+ */
+export async function checkServerStatus(
+	context: RerankerContext,
+	serverUrl: string,
+	timeout: number = 5000,
+): Promise<ServerStatus> {
+	try {
+		const response = await context.helpers.httpRequest({
+			method: 'GET',
+			url: `${serverUrl}/api/status`,
+			headers: {
+				Accept: 'application/json',
+			},
+			json: true,
+			timeout,
+		});
+
+		return {
+			status: response.status || 'healthy',
+			modelsLoaded: response.models || [],
+			vramUsage: response.vram_usage,
+			hasClassifier: response.has_classifier || false,
+			hasReranker: response.has_reranker || false,
+			version: response.version,
+		};
+	} catch (error) {
+		// If /api/status doesn't exist, it's not a VL classifier server
+		return {
+			status: 'error',
+			hasClassifier: false,
+			hasReranker: false,
+		};
+	}
+}
+
+/**
+ * Detect server type automatically
+ */
+export async function detectServerType(
+	context: RerankerContext,
+	serverUrl: string,
+): Promise<'ollama' | 'custom' | 'vl-classifier'> {
+	// First check for VL classifier with /api/status
+	const status = await checkServerStatus(context, serverUrl);
+	if (status.hasClassifier) {
+		return 'vl-classifier';
+	}
+
+	// Check for Ollama with /api/tags
+	try {
+		await context.helpers.httpRequest({
+			method: 'GET',
+			url: `${serverUrl}/api/tags`,
+			timeout: 5000,
+		});
+		return 'ollama';
+	} catch {
+		// Not Ollama
+	}
+
+	// Check for custom rerank API
+	try {
+		await context.helpers.httpRequest({
+			method: 'POST',
+			url: `${serverUrl}/api/rerank`,
+			headers: { 'Content-Type': 'application/json' },
+			body: {
+				model: 'test',
+				query: 'test',
+				documents: ['test'],
+			},
+			timeout: 5000,
+		});
+		return 'custom';
+	} catch {
+		// Default to Ollama
+		return 'ollama';
+	}
+}
+
+/**
+ * Classify document complexity using VL Classifier API
+ */
+async function classifyDocumentComplexity(
+	context: RerankerContext,
+	serverUrl: string,
+	document: any,
+	timeout: number,
+): Promise<VLClassificationResult> {
+	try {
+		// Prepare document content for classification
+		const content = document.pageContent || JSON.stringify(document);
+		
+		// For VL classifier, we might need to handle base64 images
+		// Check if document contains image data
+		const hasImage = document.image || document.base64Image;
+		
+		let requestBody: any = {
+			text: content,
+		};
+
+		if (hasImage) {
+			requestBody.image = document.image || document.base64Image;
+		}
+
+		const response = await context.helpers.httpRequest({
+			method: 'POST',
+			url: `${serverUrl}/api/classify`,
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+			},
+			body: requestBody,
+			json: true,
+			timeout,
+		});
+
+		return {
+			complexity: response.complexity || response.classification || 'LOW',
+			confidence: response.confidence,
+			processingTime: response.processing_time,
+			modelUsed: response.model || 'ResNet18-ONNX',
+		};
+	} catch (error: any) {
+		// On error, default to LOW complexity to not filter out documents
+		console.warn('Classification failed, defaulting to LOW complexity:', error.message);
+		return {
+			complexity: 'LOW',
+			confidence: 0,
+		};
+	}
+}
+
+/**
+ * Rerank documents using VL Classifier + Reranking
+ */
+async function rerankWithVLClassifier(
+	context: RerankerContext,
+	config: RerankConfig,
+): Promise<any[]> {
+	const { 
+		ollamaHost, 
+		model, 
+		query, 
+		documents, 
+		topK, 
+		threshold, 
+		timeout, 
+		includeOriginalScores,
+		classificationStrategy = 'metadata',
+		filterComplexity = 'both'
+	} = config;
+
+	// Step 1: Classify all documents
+	const classificationPromises = documents.map(async (doc, index) => {
+		const classification = await classifyDocumentComplexity(
+			context,
+			ollamaHost,
+			doc,
+			timeout,
+		);
+		return { doc, index, classification };
+	});
+
+	const classifiedDocs = await Promise.all(classificationPromises);
+
+	// Step 2: Filter documents based on strategy
+	let docsToRerank = classifiedDocs;
+	if (classificationStrategy === 'filter' || classificationStrategy === 'both') {
+		if (filterComplexity !== 'both') {
+			docsToRerank = classifiedDocs.filter(
+				item => item.classification.complexity === filterComplexity
+			);
+		}
+	}
+
+	// If no documents pass the filter, return empty
+	if (docsToRerank.length === 0) {
+		return [];
+	}
+
+	// Step 3: Prepare documents for reranking
+	const rerankerDocs = docsToRerank.map(item => {
+		const enrichedDoc = { ...item.doc };
+		if (classificationStrategy === 'metadata' || classificationStrategy === 'both') {
+			enrichedDoc._complexityClass = item.classification.complexity;
+			enrichedDoc._complexityConfidence = item.classification.confidence;
+		}
+		return enrichedDoc;
+	});
+
+	// Step 4: Check if server has reranker capability
+	const status = await checkServerStatus(context, ollamaHost);
+	
+	if (status.hasReranker) {
+		// Use the server's rerank endpoint if available
+		return await rerankWithCustomAPI(context, {
+			...config,
+			documents: rerankerDocs,
+		});
+	} else {
+		// Fall back to scoring-based reranking
+		// For VL classifier servers without reranker, we can still sort by complexity
+		const scoredDocs = rerankerDocs.map((doc, idx) => {
+			// Give higher scores to HIGH complexity documents for technical queries
+			const complexityScore = doc._complexityClass === 'HIGH' ? 0.8 : 0.2;
+			const confidenceBoost = (doc._complexityConfidence || 0) * 0.2;
+			return {
+				...doc,
+				_rerankScore: complexityScore + confidenceBoost,
+				_originalIndex: classifiedDocs[idx].index,
+			};
+		});
+
+		// Sort and filter
+		return scoredDocs
+			.filter(doc => doc._rerankScore >= threshold)
+			.sort((a, b) => b._rerankScore - a._rerankScore)
+			.slice(0, topK)
+			.map(doc => {
+				if (!includeOriginalScores && doc._originalScore !== undefined) {
+					delete doc._originalScore;
+				}
+				return doc;
+			});
+	}
 }
 
 /**
