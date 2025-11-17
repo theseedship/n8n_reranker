@@ -195,7 +195,7 @@ This node follows n8n's **Sub-node Provider pattern**:
 
 ## License
 
-MIT © Gabriel BRUMENT
+MIT
 
 ## Links
 
