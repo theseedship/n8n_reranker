@@ -172,14 +172,30 @@ async function rerankWithCustomAPI(
 			});
 		}
 
+		// Normalize scores to 0-1 range for consistent thresholding
+		// V1 (DeBERTa) returns 0-1 probabilities, V2 (Qwen2) returns logits
+		const normalizedResults = response.results.map((r: any) => {
+			const score = r.relevance_score;
+			// Detect logit scores (outside 0-1 range) and apply sigmoid
+			const normalizedScore = (score > 1 || score < 0)
+				? 1 / (1 + Math.exp(-score))  // sigmoid normalization
+				: score;
+			return {
+				...r,
+				relevance_score: normalizedScore,
+				_rawScore: score,  // Keep original score for debugging
+			};
+		});
+
 		// Filter by threshold and map to our format
-		const filteredResults = response.results
+		const filteredResults = normalizedResults
 			.filter((r: any) => r.relevance_score >= threshold)
 			.map((result: any) => {
 				const originalDoc = documents[result.index];
 				const rerankedDoc: any = {
 					...originalDoc,
 					_rerankScore: result.relevance_score,
+					_rawScore: result._rawScore,  // Include raw score for debugging
 					_originalIndex: result.index,
 				};
 

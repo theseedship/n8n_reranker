@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-ollama-reranker",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "Ollama Reranker for n8n - VL Classifier integration + Auto-detect + Dynamic model loading (Vector Store provider + workflow node)",
   "main": "index.js",
   "author": "Gabriel BRUMENT",
@@ -56,7 +56,6 @@
     "husky": "^9.1.7",
     "jest": "^29.0.0",
     "lint-staged": "^15.2.11",
-    "n8n-workflow": "^1.0.0",
     "prettier": "^3.4.2",
     "ts-jest": "^29.0.0",
     "typescript": "^5.0.0"

@@ -227,7 +227,7 @@ export class OllamaRerankerWorkflow implements INodeType {
 					maxValue: 1,
 					numberPrecision: 2,
 				},
-				description: 'Minimum relevance score (0-1)',
+				description: 'Minimum relevance score (0-1). Scores are auto-normalized across all models. Use 0.0 for no filtering.',
 			},
 			// Instruction
 			{
