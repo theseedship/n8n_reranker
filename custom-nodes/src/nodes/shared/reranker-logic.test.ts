@@ -243,6 +243,55 @@ describe('VL Classifier Integration', () => {
 			expect(rerankedDocs[0].pageContent).toContain('Complex technical document');
 		});
 
+		it('should pass model parameter to classification API', async () => {
+			const documents = [
+				{ pageContent: 'Test document', metadata: {} },
+			];
+
+			let capturedRequestBody: any = null;
+
+			(mockContext.helpers!.httpRequest as jest.Mock).mockImplementation((options) => {
+				if (options.url.includes('/api/classify')) {
+					capturedRequestBody = options.body;
+					return Promise.resolve({
+						complexity: 'HIGH',
+						confidence: 0.95,
+						model: 'lfm25-vl',
+					});
+				}
+				if (options.url.includes('/api/status')) {
+					return Promise.resolve({
+						status: 'healthy',
+						has_classifier: true,
+						has_reranker: false,
+					});
+				}
+				return Promise.reject(new Error('Unknown endpoint'));
+			});
+
+			await rerankDocuments(mockContext as any, {
+				ollamaHost: 'http://localhost:11434',
+				model: 'lfm25-vl',  // Specific model to test
+				query: 'test query',
+				documents,
+				instruction: 'Test instruction',
+				topK: 5,
+				threshold: 0.0,
+				batchSize: 10,
+				timeout: 30000,
+				includeOriginalScores: false,
+				apiType: 'vl-classifier',
+				enableClassification: true,
+				classificationStrategy: 'metadata',
+				filterComplexity: 'both',
+			});
+
+			// Verify model parameter is passed in the request
+			expect(capturedRequestBody).toBeDefined();
+			expect(capturedRequestBody.model).toBe('lfm25-vl');
+			expect(capturedRequestBody.text).toBeDefined();
+		});
+
 		it('should handle classification failures gracefully', async () => {
 			const documents = [
 				{ pageContent: 'Test document', metadata: {} },

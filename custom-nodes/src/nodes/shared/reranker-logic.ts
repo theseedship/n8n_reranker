@@ -536,6 +536,7 @@ async function classifyDocumentComplexity(
 	serverUrl: string,
 	document: any,
 	timeout: number,
+	model?: string,
 ): Promise<VLClassificationResult> {
 	try {
 		// Prepare document content for classification
@@ -547,6 +548,7 @@ async function classifyDocumentComplexity(
 		
 		let requestBody: any = {
 			text: content,
+			model: model || 'vl-classifier',
 		};
 
 		if (hasImage) {
@@ -608,6 +610,7 @@ async function rerankWithVLClassifier(
 			ollamaHost,
 			doc,
 			timeout,
+			model,
 		);
 		return { doc, index, classification };
 	});

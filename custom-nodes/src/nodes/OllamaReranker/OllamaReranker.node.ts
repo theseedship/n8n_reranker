@@ -117,6 +117,11 @@ export class OllamaReranker implements INodeType {
 						value: 'custom',
 						description: 'Custom /api/rerank endpoint (for deposium-embeddings-turbov2, etc.)',
 					},
+					{
+						name: 'VL Classifier API',
+						value: 'vl-classifier',
+						description: 'Document complexity classification with VL models (vl-classifier, lfm25-vl)',
+					},
 				],
 				default: 'ollama',
 				description: 'Which API endpoint to use for reranking',
