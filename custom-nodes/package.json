@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-ollama-reranker",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Ollama Reranker for n8n - VL Classifier integration + Auto-detect + Dynamic model loading (Vector Store provider + workflow node)",
   "author": "Gabriel BRUMENT",
   "license": "MIT",
@@ -60,12 +60,7 @@
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
-    "n8n-workflow": "^1.0.0"
-  },
-  "peerDependenciesMeta": {
-    "n8n-workflow": {
-      "optional": false
-    }
+    "n8n-workflow": "*"
   },
   "dependencies": {
     "form-data": "^4.0.4"
