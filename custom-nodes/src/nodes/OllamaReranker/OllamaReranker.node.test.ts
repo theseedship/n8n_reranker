@@ -25,6 +25,26 @@ describe('OllamaReranker', () => {
 		};
 	});
 
+	/**
+	 * supplyData() reads parameters in this order:
+	 *   model, apiType, instruction, additionalOptions
+	 * Then rerank() reads: topK, threshold (per call)
+	 * compressDocuments → rerank() then re-reads threshold for the wrapper.
+	 */
+	const setupSupplyDataParams = (apiType = 'custom') => {
+		(mockContext.getNodeParameter as jest.Mock)
+			.mockReturnValueOnce('bge-reranker-v2-m3') // model
+			.mockReturnValueOnce(apiType) // apiType
+			.mockReturnValueOnce('test instruction') // instruction
+			.mockReturnValueOnce({}); // additionalOptions
+	};
+
+	const setupRerankParams = (topK = 10, threshold = 0.0) => {
+		(mockContext.getNodeParameter as jest.Mock)
+			.mockReturnValueOnce(topK)
+			.mockReturnValueOnce(threshold);
+	};
+
 	describe('Node Configuration', () => {
 		it('should have correct node metadata', () => {
 			expect(node.description.displayName).toBe('Ollama Reranker');
@@ -32,128 +52,109 @@ describe('OllamaReranker', () => {
 			expect(node.description.version).toBe(1);
 		});
 
-		it('should have correct model options', () => {
-			const modelProperty = node.description.properties.find(p => p.name === 'model');
-			expect(modelProperty).toBeDefined();
-			expect(modelProperty?.type).toBe('options');
-			const options = (modelProperty as any).options;
-			expect(options).toHaveLength(5);
-			expect(options.map((o: any) => o.value)).toContain('bge-reranker-v2-m3');
+		it('should default API Type to custom (true cross-encoder)', () => {
+			const apiTypeProperty = node.description.properties.find((p) => p.name === 'apiType');
+			expect(apiTypeProperty).toBeDefined();
+			expect((apiTypeProperty as any).default).toBe('custom');
+		});
+
+		it('should expose all three API type options', () => {
+			const apiTypeProperty = node.description.properties.find((p) => p.name === 'apiType') as any;
+			const values = apiTypeProperty.options.map((o: any) => o.value);
+			expect(values).toEqual(expect.arrayContaining(['custom', 'vl-classifier', 'ollama']));
+		});
+
+		it('should load models dynamically from /api/tags', () => {
+			const modelProperty = node.description.properties.find((p) => p.name === 'model') as any;
+			expect(modelProperty.type).toBe('options');
+			expect(modelProperty.typeOptions?.loadOptions?.routing?.request?.url).toBe('/api/tags');
 		});
 
 		it('should have topK parameter with correct constraints', () => {
-			const topKProperty = node.description.properties.find(p => p.name === 'topK');
-			expect(topKProperty).toBeDefined();
-			expect((topKProperty as any).typeOptions.minValue).toBe(1);
-			expect((topKProperty as any).typeOptions.maxValue).toBe(100);
+			const topKProperty = node.description.properties.find((p) => p.name === 'topK') as any;
+			expect(topKProperty.typeOptions.minValue).toBe(1);
+			expect(topKProperty.typeOptions.maxValue).toBe(100);
 		});
 	});
 
 	describe('supplyData', () => {
-		it('should throw error for empty custom model name', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce('custom') // model
-				.mockReturnValueOnce(''); // customModel
+		it('should throw when model is empty', async () => {
+			(mockContext.getNodeParameter as jest.Mock).mockReturnValueOnce('');
 
-			await expect(
-				node.supplyData.call(mockContext as ISupplyDataFunctions, 0)
-			).rejects.toThrow('Custom model name is required');
+			await expect(node.supplyData.call(mockContext as ISupplyDataFunctions, 0)).rejects.toThrow(
+				'Model selection is required',
+			);
 		});
 
-		it('should initialize provider with correct credentials', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce('bge-reranker-v2-m3') // model
-				.mockReturnValueOnce('test instruction') // instruction
-				.mockReturnValueOnce({}); // additionalOptions
+		it('should throw when credentials lack baseUrl', async () => {
+			setupSupplyDataParams();
+			(mockContext.getCredentials as jest.Mock).mockResolvedValueOnce({});
 
+			await expect(node.supplyData.call(mockContext as ISupplyDataFunctions, 0)).rejects.toThrow(
+				'Ollama Base URL not configured',
+			);
+		});
+
+		it('should initialize provider with correct interface', async () => {
+			setupSupplyDataParams();
 			(mockContext.getCredentials as jest.Mock).mockResolvedValueOnce({
-				host: 'http://localhost:11434/',
+				baseUrl: 'http://localhost:11434/',
 			});
 
 			const result = await node.supplyData.call(mockContext as ISupplyDataFunctions, 0);
 
-			expect(result.response).toBeDefined();
 			const provider = result.response as any;
 			expect(provider.name).toBe('Ollama Reranker Provider');
 			expect(provider.rerank).toBeInstanceOf(Function);
 			expect(provider.compressDocuments).toBeInstanceOf(Function);
 		});
 
-		it('should use custom model when specified', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce('custom') // model
-				.mockReturnValueOnce('my-custom-model:latest') // customModel
-				.mockReturnValueOnce('test instruction') // instruction
-				.mockReturnValueOnce({}); // additionalOptions
-
+		it('should strip trailing slash from baseUrl', async () => {
+			setupSupplyDataParams();
 			(mockContext.getCredentials as jest.Mock).mockResolvedValueOnce({
-				host: 'http://localhost:11434',
+				baseUrl: 'http://localhost:11434/',
 			});
-
 			const result = await node.supplyData.call(mockContext as ISupplyDataFunctions, 0);
-
 			const provider = result.response as any;
-			expect(provider.description).toContain('my-custom-model:latest');
+			expect(provider.description).toContain('bge-reranker-v2-m3');
 		});
 	});
 
-	describe('Provider.rerank', () => {
+	describe('Provider.rerank (Ollama API path)', () => {
 		let provider: any;
 
 		beforeEach(async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce('bge-reranker-v2-m3') // model
-				.mockReturnValueOnce('test instruction') // instruction
-				.mockReturnValueOnce({}); // additionalOptions
-
+			setupSupplyDataParams('ollama');
 			(mockContext.getCredentials as jest.Mock).mockResolvedValueOnce({
-				host: 'http://localhost:11434',
+				baseUrl: 'http://localhost:11434',
 			});
-
 			const result = await node.supplyData.call(mockContext as ISupplyDataFunctions, 0);
 			provider = result.response;
-
-			// Reset mocks for rerank method
 			(mockContext.getNodeParameter as jest.Mock).mockReset();
 		});
 
-		it('should throw error for empty query', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
-
+		it('should throw on empty query', async () => {
+			setupRerankParams();
 			await expect(
-				provider.rerank({ query: '', documents: [{ pageContent: 'test' }] })
+				provider.rerank({ query: '', documents: [{ pageContent: 'test' }] }),
 			).rejects.toThrow('Query cannot be empty');
 		});
 
-		it('should return empty array for no documents', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
-
+		it('should return empty array when no documents provided', async () => {
+			setupRerankParams();
 			const result = await provider.rerank({ query: 'test query', documents: [] });
-
 			expect(result).toEqual([]);
 		});
 
-		it('should validate topN parameter', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK (not used)
-				.mockReturnValueOnce(0.0); // threshold
-
+		it('should reject topN < 1', async () => {
+			setupRerankParams();
 			await expect(
-				provider.rerank({ query: 'test', documents: [{ pageContent: 'doc' }], topN: 0 })
+				provider.rerank({ query: 'test', documents: [{ pageContent: 'doc' }], topN: 0 }),
 			).rejects.toThrow('topN/topK must be at least 1');
 		});
 
-		it('should clamp topN to maximum of 100', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK (not used)
-				.mockReturnValueOnce(0.0) // threshold
-				.mockReturnValueOnce('test instruction') // instruction
-				.mockReturnValueOnce(0.0); // threshold for rerank function
-
+		it('should clamp topN to 100 with a warning', async () => {
+			setupRerankParams();
 			(mockContext.helpers!.httpRequest as jest.Mock).mockResolvedValue({
 				response: 'Relevance: 0.8',
 			});
@@ -165,93 +166,73 @@ describe('OllamaReranker', () => {
 			});
 
 			expect(mockContext.logger!.warn).toHaveBeenCalledWith(
-				expect.stringContaining('exceeds recommended maximum')
+				expect.stringContaining('exceeds recommended maximum'),
 			);
 		});
 
-		it('should rerank documents with scores', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
-
+		it('should rank documents by score descending', async () => {
+			setupRerankParams();
 			(mockContext.helpers!.httpRequest as jest.Mock)
 				.mockResolvedValueOnce({ response: 'Relevance: 0.9' })
 				.mockResolvedValueOnce({ response: 'Relevance: 0.3' })
 				.mockResolvedValueOnce({ response: 'Relevance: 0.7' });
 
-			const documents = [
-				{ pageContent: 'Doc 1' },
-				{ pageContent: 'Doc 2' },
-				{ pageContent: 'Doc 3' },
-			];
-
-			const result = await provider.rerank({ query: 'test query', documents });
+			const result = await provider.rerank({
+				query: 'test query',
+				documents: [{ pageContent: 'Doc 1' }, { pageContent: 'Doc 2' }, { pageContent: 'Doc 3' }],
+			});
 
 			expect(result).toHaveLength(3);
 			expect(result[0]._rerankScore).toBeGreaterThan(result[1]._rerankScore);
 			expect(result[1]._rerankScore).toBeGreaterThan(result[2]._rerankScore);
 		});
 
-		it('should filter by threshold', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.5); // threshold
-
+		it('should drop documents below threshold', async () => {
+			setupRerankParams(10, 0.5);
 			(mockContext.helpers!.httpRequest as jest.Mock)
 				.mockResolvedValueOnce({ response: 'Relevance: 0.9' })
 				.mockResolvedValueOnce({ response: 'Relevance: 0.3' })
 				.mockResolvedValueOnce({ response: 'Relevance: 0.7' });
 
-			const documents = [
-				{ pageContent: 'Doc 1' },
-				{ pageContent: 'Doc 2' },
-				{ pageContent: 'Doc 3' },
-			];
-
-			const result = await provider.rerank({ query: 'test query', documents });
+			const result = await provider.rerank({
+				query: 'test query',
+				documents: [{ pageContent: 'Doc 1' }, { pageContent: 'Doc 2' }, { pageContent: 'Doc 3' }],
+			});
 
 			expect(result).toHaveLength(2);
 			expect(result.every((doc: any) => doc._rerankScore >= 0.5)).toBe(true);
 		});
 
 		it('should respect topK limit', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(2) // topK
-				.mockReturnValueOnce(0.0); // threshold
-
+			setupRerankParams(2);
 			(mockContext.helpers!.httpRequest as jest.Mock)
 				.mockResolvedValueOnce({ response: 'Relevance: 0.9' })
 				.mockResolvedValueOnce({ response: 'Relevance: 0.8' })
 				.mockResolvedValueOnce({ response: 'Relevance: 0.7' });
 
-			const documents = [
-				{ pageContent: 'Doc 1' },
-				{ pageContent: 'Doc 2' },
-				{ pageContent: 'Doc 3' },
-			];
-
-			const result = await provider.rerank({ query: 'test query', documents });
-
+			const result = await provider.rerank({
+				query: 'test query',
+				documents: [{ pageContent: 'Doc 1' }, { pageContent: 'Doc 2' }, { pageContent: 'Doc 3' }],
+			});
 			expect(result).toHaveLength(2);
 		});
 
-		it('should handle different document formats', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
+		it('should accept multiple document content field names', async () => {
+			setupRerankParams();
+			(mockContext.helpers!.httpRequest as jest.Mock).mockResolvedValue({
+				response: 'Relevance: 0.8',
+			});
 
-			(mockContext.helpers!.httpRequest as jest.Mock)
-				.mockResolvedValue({ response: 'Relevance: 0.8' });
-
-			const documents = [
-				{ pageContent: 'Standard format' },
-				{ text: 'Text property' },
-				{ content: 'Content property' },
-				{ document: 'Document property' },
-				'Plain string',
-			];
-
-			const result = await provider.rerank({ query: 'test', documents });
+			const result = await provider.rerank({
+				query: 'test',
+				documents: [
+					{ pageContent: 'Standard format' },
+					{ text: 'Text property' },
+					{ content: 'Content property' },
+					{ document: 'Document property' },
+					'Plain string',
+				],
+			});
 
 			expect(result).toHaveLength(5);
 			result.forEach((doc: any) => {
@@ -261,62 +242,86 @@ describe('OllamaReranker', () => {
 			});
 		});
 
-		it('should preserve original metadata', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
+		it('should preserve original metadata on the doc root', async () => {
+			setupRerankParams();
+			(mockContext.helpers!.httpRequest as jest.Mock).mockResolvedValue({
+				response: 'Relevance: 0.8',
+			});
 
-			(mockContext.helpers!.httpRequest as jest.Mock)
-				.mockResolvedValue({ response: 'Relevance: 0.8' });
-
-			const documents = [
-				{
-					pageContent: 'Test doc',
-					metadata: { source: 'file.txt', page: 1 },
-				},
-			];
-
-			const result = await provider.rerank({ query: 'test', documents });
+			const result = await provider.rerank({
+				query: 'test',
+				documents: [
+					{
+						pageContent: 'Test doc',
+						metadata: { source: 'file.txt', page: 1 },
+					},
+				],
+			});
 
 			expect(result[0].metadata).toEqual({ source: 'file.txt', page: 1 });
 		});
 	});
 
-	describe('Provider.compressDocuments', () => {
+	describe('Provider.compressDocuments (LangChain interface)', () => {
 		let provider: any;
 
 		beforeEach(async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce('bge-reranker-v2-m3') // model
-				.mockReturnValueOnce('test instruction') // instruction
-				.mockReturnValueOnce({}); // additionalOptions
-
+			setupSupplyDataParams('ollama');
 			(mockContext.getCredentials as jest.Mock).mockResolvedValueOnce({
-				host: 'http://localhost:11434',
+				baseUrl: 'http://localhost:11434',
 			});
-
 			const result = await node.supplyData.call(mockContext as ISupplyDataFunctions, 0);
 			provider = result.response;
-
 			(mockContext.getNodeParameter as jest.Mock).mockReset();
 		});
 
-		it('should remove helper fields from output', async () => {
+		it('should embed _rerankScore and _originalIndex inside metadata (GH #1)', async () => {
+			// compressDocuments calls rerank, which reads topK + threshold,
+			// then re-reads threshold itself when constructing the call.
 			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValue(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
+				.mockReturnValueOnce(0.0) // outer threshold (compressDocuments)
+				.mockReturnValueOnce(10) // topK (rerank)
+				.mockReturnValueOnce(0.0); // threshold (rerank)
 
-			(mockContext.helpers!.httpRequest as jest.Mock)
-				.mockResolvedValue({ response: 'Relevance: 0.8' });
+			(mockContext.helpers!.httpRequest as jest.Mock).mockResolvedValue({
+				response: 'Relevance: 0.8',
+			});
 
-			const documents = [{ pageContent: 'Test doc' }];
+			const documents = [{ pageContent: 'Test doc', metadata: { source: 'file.txt' } }];
 
 			const result = await provider.compressDocuments(documents, 'test query');
 
 			expect(result).toHaveLength(1);
+			// Helper fields removed from doc root (LangChain shape preserved)
 			expect(result[0]._rerankScore).toBeUndefined();
 			expect(result[0]._originalIndex).toBeUndefined();
+			// But available via metadata for quality assessment
+			expect(result[0].metadata._rerankScore).toBeDefined();
+			expect(result[0].metadata._originalIndex).toBe(0);
+			// Original metadata still preserved
+			expect(result[0].metadata.source).toBe('file.txt');
+			// Original page content unchanged
 			expect(result[0].pageContent).toBe('Test doc');
+		});
+
+		it('should still embed metadata when document has no metadata field', async () => {
+			(mockContext.getNodeParameter as jest.Mock)
+				.mockReturnValueOnce(0.0)
+				.mockReturnValueOnce(10)
+				.mockReturnValueOnce(0.0);
+
+			(mockContext.helpers!.httpRequest as jest.Mock).mockResolvedValue({
+				response: 'Relevance: 0.8',
+			});
+
+			const result = await provider.compressDocuments(
+				[{ pageContent: 'No metadata' }],
+				'test query',
+			);
+
+			expect(result[0].metadata).toBeDefined();
+			expect(result[0].metadata._rerankScore).toBeGreaterThan(0);
+			expect(result[0].metadata._originalIndex).toBe(0);
 		});
 	});
 
@@ -324,26 +329,17 @@ describe('OllamaReranker', () => {
 		let provider: any;
 
 		beforeEach(async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce('bge-reranker-v2-m3') // model
-				.mockReturnValueOnce('test instruction') // instruction
-				.mockReturnValueOnce({}); // additionalOptions
-
+			setupSupplyDataParams('ollama');
 			(mockContext.getCredentials as jest.Mock).mockResolvedValueOnce({
-				host: 'http://localhost:11434',
+				baseUrl: 'http://localhost:11434',
 			});
-
 			const result = await node.supplyData.call(mockContext as ISupplyDataFunctions, 0);
 			provider = result.response;
-
 			(mockContext.getNodeParameter as jest.Mock).mockReset();
 		});
 
-		it('should retry on timeout errors', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
-
+		it('should retry on transient errors (AbortError)', async () => {
+			setupRerankParams();
 			const timeoutError = new Error('Timeout');
 			(timeoutError as any).name = 'AbortError';
 
@@ -352,54 +348,27 @@ describe('OllamaReranker', () => {
 				.mockRejectedValueOnce(timeoutError)
 				.mockResolvedValueOnce({ response: 'Relevance: 0.8' });
 
-			const documents = [{ pageContent: 'Test doc' }];
-			const result = await provider.rerank({ query: 'test', documents });
+			const result = await provider.rerank({
+				query: 'test',
+				documents: [{ pageContent: 'Test doc' }],
+			});
 
 			expect(result).toHaveLength(1);
 			expect(mockContext.helpers!.httpRequest).toHaveBeenCalledTimes(3);
 		});
 
-		it('should not retry on 404 errors', async () => {
-			(mockContext.getNodeParameter as jest.Mock)
-				.mockReturnValueOnce(10) // topK
-				.mockReturnValueOnce(0.0); // threshold
-
+		it('should not retry on 404 (permanent error)', async () => {
+			setupRerankParams();
 			const notFoundError = new Error('Not found');
 			(notFoundError as any).response = { statusCode: 404 };
 
-			(mockContext.helpers!.httpRequest as jest.Mock)
-				.mockRejectedValue(notFoundError);
-
-			const documents = [{ pageContent: 'Test doc' }];
+			(mockContext.helpers!.httpRequest as jest.Mock).mockRejectedValue(notFoundError);
 
 			await expect(
-				provider.rerank({ query: 'test', documents })
+				provider.rerank({ query: 'test', documents: [{ pageContent: 'Test doc' }] }),
 			).rejects.toThrow();
 
 			expect(mockContext.helpers!.httpRequest).toHaveBeenCalledTimes(1);
-		});
-	});
-
-	describe('Score Parsing', () => {
-		it('should parse BGE numeric scores', () => {
-			// This would test the parseRerankerResponse function
-			// but it's not exported. Consider exporting it for testing
-			// or testing through integration tests
-		});
-
-		it('should parse Qwen yes/no responses', () => {
-			// Similar to above
-		});
-	});
-
-	describe('Prompt Formatting', () => {
-		it('should format BGE prompts correctly', () => {
-			// This would test the formatRerankerPrompt function
-			// Consider exporting it for testing
-		});
-
-		it('should format Qwen prompts correctly', () => {
-			// Similar to above
 		});
 	});
 });

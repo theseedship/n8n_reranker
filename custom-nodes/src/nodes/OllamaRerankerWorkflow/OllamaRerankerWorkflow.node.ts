@@ -68,7 +68,8 @@ export class OllamaRerankerWorkflow implements INodeType {
 				name: 'model',
 				type: 'options',
 				default: '',
-				description: 'The reranker model to use - models are loaded from your configured Ollama/Custom API',
+				description:
+					'The reranker model to use - models are loaded from your configured Ollama/Custom API',
 				typeOptions: {
 					loadOptions: {
 						routing: {
@@ -111,23 +112,27 @@ export class OllamaRerankerWorkflow implements INodeType {
 				type: 'options',
 				options: [
 					{
-						name: 'Ollama Generate API',
-						value: 'ollama',
-						description: 'Standard Ollama /api/generate endpoint (for BGE, Qwen prompt-based rerankers)',
-					},
-					{
 						name: 'Custom Rerank API',
 						value: 'custom',
-						description: 'Custom /api/rerank endpoint (for deposium-embeddings-turbov2, etc.)',
+						description:
+							'Dedicated /api/rerank endpoint with true cross-encoder scoring (recommended)',
 					},
 					{
 						name: 'VL Classifier API',
 						value: 'vl-classifier',
-						description: 'Document complexity classification with VL models (vl-classifier, lfm25-vl)',
+						description:
+							'Document complexity classification with VL models (vl-classifier, lfm25-vl)',
+					},
+					{
+						name: 'Ollama Generate API (Experimental)',
+						value: 'ollama',
+						description:
+							'Prompt-based scoring via /api/generate. Heuristic only — Ollama has no native reranker support.',
 					},
 				],
-				default: 'ollama',
-				description: 'Which API endpoint to use for reranking',
+				default: 'custom',
+				description:
+					'Which API endpoint to use for reranking. Custom Rerank API is recommended for true cross-encoder scores.',
 			},
 			// Query input (flexible like n8n nodes)
 			{
@@ -227,7 +232,8 @@ export class OllamaRerankerWorkflow implements INodeType {
 					maxValue: 1,
 					numberPrecision: 2,
 				},
-				description: 'Minimum relevance score (0-1). Scores are auto-normalized across all models. Use 0.0 for no filtering.',
+				description:
+					'Minimum relevance score (0-1). Scores are auto-normalized across all models. Use 0.0 for no filtering.',
 			},
 			// Instruction
 			{
@@ -332,7 +338,7 @@ export class OllamaRerankerWorkflow implements INodeType {
 						displayOptions: {
 							show: {
 								'/apiType': ['vl-classifier'],
-								'enableClassification': [true],
+								enableClassification: [true],
 							},
 						},
 					},
@@ -362,8 +368,8 @@ export class OllamaRerankerWorkflow implements INodeType {
 						displayOptions: {
 							show: {
 								'/apiType': ['vl-classifier'],
-								'enableClassification': [true],
-								'classificationStrategy': ['filter', 'both'],
+								enableClassification: [true],
+								classificationStrategy: ['filter', 'both'],
 							},
 						},
 					},
@@ -436,11 +442,7 @@ export class OllamaRerankerWorkflow implements INodeType {
 				// Get query (supports expressions)
 				const query = this.getNodeParameter('query', itemIndex) as string;
 				if (!query?.trim()) {
-					throw new NodeOperationError(
-						this.getNode(),
-						'Query cannot be empty',
-						{ itemIndex },
-					);
+					throw new NodeOperationError(this.getNode(), 'Query cannot be empty', { itemIndex });
 				}
 
 				// Get documents based on source type
@@ -469,7 +471,10 @@ export class OllamaRerankerWorkflow implements INodeType {
 					documents = docsFromField;
 				} else if (documentsSource === 'expression') {
 					// Use custom expression
-					const documentsExpression = this.getNodeParameter('documentsExpression', itemIndex) as any;
+					const documentsExpression = this.getNodeParameter(
+						'documentsExpression',
+						itemIndex,
+					) as any;
 					if (!Array.isArray(documentsExpression)) {
 						throw new NodeOperationError(
 							this.getNode(),

@@ -1,10 +1,4 @@
-import {
-	IExecuteFunctions,
-	ISupplyDataFunctions,
-	NodeApiError,
-	NodeOperationError,
-	JsonObject,
-} from 'n8n-workflow';
+import { IExecuteFunctions, ISupplyDataFunctions, NodeApiError, JsonObject } from 'n8n-workflow';
 
 // Type that works with both IExecuteFunctions and ISupplyDataFunctions
 type RerankerContext = IExecuteFunctions | ISupplyDataFunctions;
@@ -50,21 +44,19 @@ export async function rerankDocuments(
 	context: RerankerContext,
 	config: RerankConfig,
 ): Promise<any[]> {
-	const { 
-		ollamaHost, 
-		model, 
-		query, 
-		documents, 
-		instruction, 
-		topK, 
-		threshold, 
-		batchSize, 
-		timeout, 
-		includeOriginalScores, 
+	const {
+		ollamaHost,
+		model,
+		query,
+		documents,
+		instruction,
+		topK,
+		threshold,
+		batchSize,
+		timeout,
+		includeOriginalScores,
 		apiType = 'ollama',
 		enableClassification = false,
-		classificationStrategy = 'metadata',
-		filterComplexity = 'both'
 	} = config;
 
 	// Handle VL Classifier API with reranking
@@ -93,7 +85,7 @@ export async function rerankDocuments(
 			doc.pageContent,
 			instruction,
 			timeout,
-		).then(score => ({
+		).then((score) => ({
 			index: i,
 			score,
 		}));
@@ -110,12 +102,12 @@ export async function rerankDocuments(
 
 	// Filter by threshold and sort by score (descending)
 	const filteredResults = results
-		.filter(r => r.score >= threshold)
+		.filter((r) => r.score >= threshold)
 		.sort((a, b) => b.score - a.score)
 		.slice(0, topK);
 
 	// Map back to original documents with scores
-	return filteredResults.map(result => {
+	return filteredResults.map((result) => {
 		const originalDoc = documents[result.index];
 		const rerankedDoc: any = {
 			...originalDoc,
@@ -136,15 +128,13 @@ export async function rerankDocuments(
  * This is for services like deposium-embeddings-turbov2 that implement
  * a custom /api/rerank endpoint with direct cosine similarity scoring
  */
-async function rerankWithCustomAPI(
-	context: RerankerContext,
-	config: RerankConfig,
-): Promise<any[]> {
-	const { ollamaHost, model, query, documents, topK, threshold, timeout, includeOriginalScores } = config;
+async function rerankWithCustomAPI(context: RerankerContext, config: RerankConfig): Promise<any[]> {
+	const { ollamaHost, model, query, documents, topK, threshold, timeout, includeOriginalScores } =
+		config;
 
 	try {
 		// Extract document content as strings
-		const documentStrings = documents.map(doc => doc.pageContent || JSON.stringify(doc));
+		const documentStrings = documents.map((doc) => doc.pageContent || JSON.stringify(doc));
 
 		// Call /api/rerank endpoint
 		const response = await context.helpers.httpRequest({
@@ -177,13 +167,14 @@ async function rerankWithCustomAPI(
 		const normalizedResults = response.results.map((r: any) => {
 			const score = r.relevance_score;
 			// Detect logit scores (outside 0-1 range) and apply sigmoid
-			const normalizedScore = (score > 1 || score < 0)
-				? 1 / (1 + Math.exp(-score))  // sigmoid normalization
-				: score;
+			const normalizedScore =
+				score > 1 || score < 0
+					? 1 / (1 + Math.exp(-score)) // sigmoid normalization
+					: score;
 			return {
 				...r,
 				relevance_score: normalizedScore,
-				_rawScore: score,  // Keep original score for debugging
+				_rawScore: score, // Keep original score for debugging
 			};
 		});
 
@@ -195,7 +186,7 @@ async function rerankWithCustomAPI(
 				const rerankedDoc: any = {
 					...originalDoc,
 					_rerankScore: result.relevance_score,
-					_rawScore: result._rawScore,  // Include raw score for debugging
+					_rawScore: result._rawScore, // Include raw score for debugging
 					_originalIndex: result.index,
 				};
 
@@ -207,7 +198,6 @@ async function rerankWithCustomAPI(
 			});
 
 		return filteredResults;
-
 	} catch (error: any) {
 		if (error?.response?.statusCode === 404) {
 			throw new NodeApiError(context.getNode(), error, {
@@ -283,13 +273,14 @@ async function scoreDocument(
 
 			// Retry on transient errors (timeout, 5xx, network issues)
 			if (attempt < maxRetries - 1) {
-				const isTransient = error?.name === 'AbortError' ||
+				const isTransient =
+					error?.name === 'AbortError' ||
 					error?.code === 'ETIMEDOUT' ||
 					error?.response?.statusCode >= 500;
 
 				if (isTransient) {
 					// Exponential backoff: 100ms, 200ms, 400ms
-					await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt)));
+					await new Promise((resolve) => setTimeout(resolve, 100 * Math.pow(2, attempt)));
 					continue;
 				}
 			}
@@ -326,7 +317,12 @@ async function scoreDocument(
  * - BGE Reranker: Simple query + document format
  * - Qwen3-Reranker: Structured chat format with system/user/assistant tags
  */
-function formatRerankerPrompt(model: string, query: string, documentContent: string, instruction: string): string {
+function formatRerankerPrompt(
+	model: string,
+	query: string,
+	documentContent: string,
+	instruction: string,
+): string {
 	// Detect model type
 	const isBGE = model.toLowerCase().includes('bge');
 	const isQwen = model.toLowerCase().includes('qwen');
@@ -415,7 +411,8 @@ function parseQwenScore(output: string, outputLower: string): number | null {
 
 	if (noMatch && !yesMatch) {
 		// Low scores for negative responses
-		const hasStrongNegative = outputLower.includes('completely') ||
+		const hasStrongNegative =
+			outputLower.includes('completely') ||
 			outputLower.includes('totally') ||
 			outputLower.includes('not at all');
 		return hasStrongNegative ? 0.05 : 0.15;
@@ -449,13 +446,13 @@ function parseGenericScore(output: string, outputLower: string): number {
 	const positiveKeywords = ['relevant', 'yes', 'high', 'strong', 'good', 'match', 'related'];
 	const negativeKeywords = ['irrelevant', 'no', 'low', 'weak', 'poor', 'unrelated', 'different'];
 
-	const positiveCount = positiveKeywords.filter(kw => outputLower.includes(kw)).length;
-	const negativeCount = negativeKeywords.filter(kw => outputLower.includes(kw)).length;
+	const positiveCount = positiveKeywords.filter((kw) => outputLower.includes(kw)).length;
+	const negativeCount = negativeKeywords.filter((kw) => outputLower.includes(kw)).length;
 
 	if (positiveCount > negativeCount) {
-		return 0.5 + (positiveCount * 0.1);
+		return 0.5 + positiveCount * 0.1;
 	} else if (negativeCount > positiveCount) {
-		return 0.5 - (negativeCount * 0.1);
+		return 0.5 - negativeCount * 0.1;
 	}
 
 	// Default to neutral if completely ambiguous
@@ -468,7 +465,7 @@ function parseGenericScore(output: string, outputLower: string): number {
 export async function checkServerStatus(
 	context: RerankerContext,
 	serverUrl: string,
-	timeout: number = 5000,
+	timeout = 5000,
 ): Promise<ServerStatus> {
 	try {
 		const response = await context.helpers.httpRequest({
@@ -557,12 +554,12 @@ async function classifyDocumentComplexity(
 	try {
 		// Prepare document content for classification
 		const content = document.pageContent || JSON.stringify(document);
-		
+
 		// For VL classifier, we might need to handle base64 images
 		// Check if document contains image data
 		const hasImage = document.image || document.base64Image;
-		
-		let requestBody: any = {
+
+		const requestBody: any = {
 			text: content,
 			model: model || 'vl-classifier',
 		};
@@ -606,17 +603,16 @@ async function rerankWithVLClassifier(
 	context: RerankerContext,
 	config: RerankConfig,
 ): Promise<any[]> {
-	const { 
-		ollamaHost, 
-		model, 
-		query, 
-		documents, 
-		topK, 
-		threshold, 
-		timeout, 
+	const {
+		ollamaHost,
+		model,
+		documents,
+		topK,
+		threshold,
+		timeout,
 		includeOriginalScores,
 		classificationStrategy = 'metadata',
-		filterComplexity = 'both'
+		filterComplexity = 'both',
 	} = config;
 
 	// Step 1: Classify all documents
@@ -638,7 +634,7 @@ async function rerankWithVLClassifier(
 	if (classificationStrategy === 'filter' || classificationStrategy === 'both') {
 		if (filterComplexity !== 'both') {
 			docsToRerank = classifiedDocs.filter(
-				item => item.classification.complexity === filterComplexity
+				(item) => item.classification.complexity === filterComplexity,
 			);
 		}
 	}
@@ -649,7 +645,7 @@ async function rerankWithVLClassifier(
 	}
 
 	// Step 3: Prepare documents for reranking
-	const rerankerDocs = docsToRerank.map(item => {
+	const rerankerDocs = docsToRerank.map((item) => {
 		const enrichedDoc = { ...item.doc };
 		if (classificationStrategy === 'metadata' || classificationStrategy === 'both') {
 			enrichedDoc._complexityClass = item.classification.complexity;
@@ -660,7 +656,7 @@ async function rerankWithVLClassifier(
 
 	// Step 4: Check if server has reranker capability
 	const status = await checkServerStatus(context, ollamaHost);
-	
+
 	if (status.hasReranker) {
 		// Use the server's rerank endpoint if available
 		return await rerankWithCustomAPI(context, {
@@ -683,10 +679,10 @@ async function rerankWithVLClassifier(
 
 		// Sort and filter
 		return scoredDocs
-			.filter(doc => doc._rerankScore >= threshold)
+			.filter((doc) => doc._rerankScore >= threshold)
 			.sort((a, b) => b._rerankScore - a._rerankScore)
 			.slice(0, topK)
-			.map(doc => {
+			.map((doc) => {
 				if (!includeOriginalScores && doc._originalScore !== undefined) {
 					delete doc._originalScore;
 				}

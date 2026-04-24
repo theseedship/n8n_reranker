@@ -66,7 +66,8 @@ export class OllamaReranker implements INodeType {
 				name: 'model',
 				type: 'options',
 				default: '',
-				description: 'The reranker model to use - models are loaded from your configured Ollama/Custom API',
+				description:
+					'The reranker model to use - models are loaded from your configured Ollama/Custom API',
 				typeOptions: {
 					loadOptions: {
 						routing: {
@@ -108,23 +109,27 @@ export class OllamaReranker implements INodeType {
 				type: 'options',
 				options: [
 					{
-						name: 'Ollama Generate API',
-						value: 'ollama',
-						description: 'Standard Ollama /api/generate endpoint (for BGE, Qwen prompt-based rerankers)',
-					},
-					{
 						name: 'Custom Rerank API',
 						value: 'custom',
-						description: 'Custom /api/rerank endpoint (for deposium-embeddings-turbov2, etc.)',
+						description:
+							'Dedicated /api/rerank endpoint with true cross-encoder scoring (recommended)',
 					},
 					{
 						name: 'VL Classifier API',
 						value: 'vl-classifier',
-						description: 'Document complexity classification with VL models (vl-classifier, lfm25-vl)',
+						description:
+							'Document complexity classification with VL models (vl-classifier, lfm25-vl)',
+					},
+					{
+						name: 'Ollama Generate API (Experimental)',
+						value: 'ollama',
+						description:
+							'Prompt-based scoring via /api/generate. Heuristic only — Ollama has no native reranker support.',
 					},
 				],
-				default: 'ollama',
-				description: 'Which API endpoint to use for reranking',
+				default: 'custom',
+				description:
+					'Which API endpoint to use for reranking. Custom Rerank API is recommended for true cross-encoder scores.',
 			},
 			{
 				displayName: 'Top K',
@@ -147,14 +152,16 @@ export class OllamaReranker implements INodeType {
 					maxValue: 1,
 					numberPrecision: 2,
 				},
-				description: 'Minimum relevance score (0-1). Scores are auto-normalized across all models. Use 0.0 for no filtering.',
+				description:
+					'Minimum relevance score (0-1). Scores are auto-normalized across all models. Use 0.0 for no filtering.',
 			},
 			{
 				displayName: 'Task Instruction',
 				name: 'instruction',
 				type: 'string',
 				default: 'Given a web search query, retrieve relevant passages that answer the query',
-				description: 'Custom instruction for the reranking task (improves accuracy for specific use cases)',
+				description:
+					'Custom instruction for the reranking task (improves accuracy for specific use cases)',
 			},
 			{
 				displayName: 'Additional Options',
@@ -231,7 +238,7 @@ export class OllamaReranker implements INodeType {
 						displayOptions: {
 							show: {
 								'/apiType': ['vl-classifier'],
-								'enableClassification': [true],
+								enableClassification: [true],
 							},
 						},
 					},
@@ -261,8 +268,8 @@ export class OllamaReranker implements INodeType {
 						displayOptions: {
 							show: {
 								'/apiType': ['vl-classifier'],
-								'enableClassification': [true],
-								'classificationStrategy': ['filter', 'both'],
+								enableClassification: [true],
+								classificationStrategy: ['filter', 'both'],
 							},
 						},
 					},
@@ -344,7 +351,12 @@ export class OllamaReranker implements INodeType {
 			 * @param input.threshold - Optional override for score threshold
 			 * @returns Array of reranked documents with _rerankScore and _originalIndex
 			 */
-			rerank: async (input: { query: string; documents: any[]; topN?: number; threshold?: number }) => {
+			rerank: async (input: {
+				query: string;
+				documents: any[];
+				topN?: number;
+				threshold?: number;
+			}) => {
 				// Log input for n8n execution tracking
 				const { index } = self.addInputData(NodeConnectionTypes.AiReranker, [
 					[{ json: { query: input.query, documents: input.documents } }],
@@ -380,7 +392,8 @@ export class OllamaReranker implements INodeType {
 				const processedDocs = docs.map((doc, docIndex) => {
 					if (doc && typeof doc === 'object') {
 						return {
-							pageContent: doc.pageContent || doc.text || doc.content || doc.document || JSON.stringify(doc),
+							pageContent:
+								doc.pageContent || doc.text || doc.content || doc.document || JSON.stringify(doc),
 							metadata: doc.metadata || {},
 							_originalIndex: docIndex,
 							...(doc._originalScore !== undefined ? { _originalScore: doc._originalScore } : {}),
@@ -431,8 +444,10 @@ export class OllamaReranker implements INodeType {
 			/**
 			 * compressDocuments() - LangChain BaseDocumentCompressor interface
 			 *
-			 * Provides backward compatibility with LangChain patterns.
-			 * Returns documents without helper fields (_rerankScore, _originalIndex).
+			 * LangChain's BaseDocument shape is { pageContent, metadata }, so
+			 * rerank bookkeeping (_rerankScore, _originalIndex) is embedded in
+			 * metadata rather than on the root — that preserves the shape while
+			 * still letting downstream nodes assess rerank quality. See GH #1.
 			 */
 			compressDocuments: async (documents: any[], query: string, topN?: number) => {
 				const ranked = await provider.rerank({
@@ -442,10 +457,17 @@ export class OllamaReranker implements INodeType {
 					threshold: self.getNodeParameter('threshold', 0) as number,
 				});
 
-				// Return clean documents (remove helper fields for LangChain compatibility)
 				return ranked.map((doc: any) => {
-					const { _rerankScore, _originalIndex, ...cleanDoc } = doc;
-					return cleanDoc;
+					const { _rerankScore, _originalIndex, _rawScore, ...cleanDoc } = doc;
+					return {
+						...cleanDoc,
+						metadata: {
+							...(cleanDoc.metadata || {}),
+							_rerankScore,
+							_originalIndex,
+							...(_rawScore !== undefined ? { _rawScore } : {}),
+						},
+					};
 				});
 			},
 		};

@@ -1,2 +1,3 @@
-npx lint-staged
-npx qlty check --filter=diff
+#!/usr/bin/env sh
+# Hooks run with cwd=git root, but lint-staged lives in custom-nodes/node_modules.
+cd "$(dirname "$0")/.." && npx lint-staged
