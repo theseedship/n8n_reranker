@@ -297,8 +297,9 @@ export class OllamaReranker implements INodeType {
 			);
 		}
 
-		// Get API type
-		let apiType = this.getNodeParameter('apiType', 0, 'ollama') as string;
+		// Get API type. Fallback must match the property `default` (custom) —
+		// see OllamaRerankerWorkflow for the saved-workflow rationale.
+		let apiType = this.getNodeParameter('apiType', 0, 'custom') as string;
 		const instruction = this.getNodeParameter('instruction', 0) as string;
 		const additionalOptions = this.getNodeParameter('additionalOptions', 0, {}) as {
 			includeOriginalScores?: boolean;

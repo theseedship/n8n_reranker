@@ -407,8 +407,11 @@ export class OllamaRerankerWorkflow implements INodeType {
 			);
 		}
 
-		// Get API type and auto-detect if needed
-		let apiType = this.getNodeParameter('apiType', 0, 'ollama') as string;
+		// Get API type and auto-detect if needed.
+		// Fallback must match the property `default` (custom) — workflows saved
+		// before the apiType field existed have no value serialized, so without
+		// this they'd silently route to the deprecated Ollama Generate path.
+		let apiType = this.getNodeParameter('apiType', 0, 'custom') as string;
 		if (apiType === 'auto') {
 			const { detectServerType } = await import('../shared/reranker-logic');
 			apiType = await detectServerType(this, ollamaHost);

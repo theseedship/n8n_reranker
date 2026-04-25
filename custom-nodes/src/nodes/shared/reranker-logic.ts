@@ -55,7 +55,7 @@ export async function rerankDocuments(
 		batchSize,
 		timeout,
 		includeOriginalScores,
-		apiType = 'ollama',
+		apiType = 'custom',
 		enableClassification = false,
 	} = config;
 
