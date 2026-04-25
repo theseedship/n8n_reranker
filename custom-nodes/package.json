@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-ollama-reranker",
-	"version": "1.6.0",
+	"version": "1.6.1",
 	"description": "Reranker nodes for n8n - Custom rerank API (recommended), VL Classifier, Ollama Generate (experimental). Vector Store provider + workflow node.",
 	"author": "Gabriel BRUMENT",
 	"license": "MIT",
